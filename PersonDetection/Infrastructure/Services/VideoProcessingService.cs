@@ -709,6 +709,11 @@ namespace PersonDetection.Infrastructure.Services
                     return;
                 }
 
+                // Calculate statistics
+                var peakCount = job.Detections.Any() ? job.Detections.Max(d => d.PersonCount) : 0;
+                var avgCount = job.Detections.Any() ? job.Detections.Average(d => d.PersonCount) : 0;
+
+
                 videoJob.State = (VideoJobState)(int)job.State;
                 videoJob.TotalFrames = job.TotalFrames;
                 videoJob.ProcessedFrames = job.ProcessedFrames;
@@ -718,6 +723,8 @@ namespace PersonDetection.Infrastructure.Services
                 videoJob.VideoFps = job.VideoFps;
                 videoJob.ProcessingTimeSeconds = job.ProcessingStopwatch.Elapsed.TotalSeconds;
                 videoJob.CompletedAt = DateTime.UtcNow;
+                videoJob.AveragePersonsPerFrame = avgCount;  // 👈 ADD THIS
+                videoJob.PeakPersonCount = peakCount;
 
                 if (job.State == VideoProcessingState.Failed)
                     videoJob.ErrorMessage = job.ErrorMessage;

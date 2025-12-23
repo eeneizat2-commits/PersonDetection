@@ -19,6 +19,8 @@ namespace PersonDetection.Domain.Entities
         public double VideoFps { get; set; }
         public double ProcessingTimeSeconds { get; set; }
         public int FrameSkip { get; set; } = 5;
+        public double? AveragePersonsPerFrame { get; set; }  // 👈 ADD THIS
+        public int? PeakPersonCount { get; set; }            // 👈 ADD THIS
         public DateTime StartedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
         public string? ErrorMessage { get; set; }

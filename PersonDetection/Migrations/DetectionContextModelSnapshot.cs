@@ -314,6 +314,9 @@ namespace PersonDetection.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<double?>("AveragePersonsPerFrame")
+                        .HasColumnType("float");
+
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("datetime2");
 
@@ -338,6 +341,9 @@ namespace PersonDetection.Migrations
                     b.Property<string>("OriginalFilePath")
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int?>("PeakPersonCount")
+                        .HasColumnType("int");
 
                     b.Property<int>("ProcessedFrames")
                         .HasColumnType("int");

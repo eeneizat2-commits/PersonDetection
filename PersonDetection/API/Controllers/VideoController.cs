@@ -385,6 +385,8 @@
                 videoJob.VideoFps,
                 videoJob.ProcessingTimeSeconds,
                 videoJob.FrameSkip,
+                videoJob.AveragePersonsPerFrame,  // 👈 ADD THIS
+                videoJob.PeakPersonCount,
                 videoJob.StartedAt,
                 videoJob.CompletedAt,
                 videoJob.ErrorMessage,
