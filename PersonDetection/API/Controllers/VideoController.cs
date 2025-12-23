@@ -330,6 +330,145 @@
         }
 
         /// <summary>
+        /// Stream the original video file
+        /// </summary>
+        [HttpGet("{jobId}/video")]
+        public async Task<IActionResult> GetVideo(Guid jobId, CancellationToken ct)
+        {
+            using var scope = HttpContext.RequestServices.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+            var videoJob = await context.VideoJobs
+                .FirstOrDefaultAsync(v => v.JobId == jobId, ct);
+
+            if (videoJob == null)
+                return NotFound(new { error = "Video job not found" });
+
+            var filePath = videoJob.StoredFilePath ?? videoJob.OriginalFilePath;
+
+            if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
+                return NotFound(new { error = "Video file not found on disk", path = filePath });
+
+            var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var contentType = GetContentType(videoJob.FileName);
+
+            return File(stream, contentType, videoJob.FileName, enableRangeProcessing: true);
+        }
+
+        /// <summary>
+        /// Get video job details from database
+        /// </summary>
+        [HttpGet("{jobId}/details")]
+        public async Task<IActionResult> GetVideoDetails(Guid jobId, CancellationToken ct)
+        {
+            using var scope = HttpContext.RequestServices.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+            var videoJob = await context.VideoJobs
+                .Include(v => v.PersonTimelines)
+                .FirstOrDefaultAsync(v => v.JobId == jobId, ct);
+
+            if (videoJob == null)
+                return NotFound(new { error = "Video job not found" });
+
+            return Ok(new
+            {
+                videoJob.Id,
+                videoJob.JobId,
+                videoJob.FileName,
+                State = videoJob.State.ToString(),
+                videoJob.TotalFrames,
+                videoJob.ProcessedFrames,
+                videoJob.TotalDetections,
+                videoJob.UniquePersonCount,
+                videoJob.VideoDurationSeconds,
+                videoJob.VideoFps,
+                videoJob.ProcessingTimeSeconds,
+                videoJob.FrameSkip,
+                videoJob.StartedAt,
+                videoJob.CompletedAt,
+                videoJob.ErrorMessage,
+                VideoFileExists = !string.IsNullOrEmpty(videoJob.StoredFilePath ?? videoJob.OriginalFilePath)
+                                  && System.IO.File.Exists(videoJob.StoredFilePath ?? videoJob.OriginalFilePath),
+                PersonTimelines = videoJob.PersonTimelines.Select(t => new
+                {
+                    t.Id,
+                    t.GlobalPersonId,
+                    ShortId = t.GlobalPersonId.ToString()[..6],
+                    t.FirstAppearanceSeconds,
+                    t.LastAppearanceSeconds,
+                    t.TotalAppearances,
+                    t.AverageConfidence,
+                    HasThumbnail = !string.IsNullOrEmpty(t.ThumbnailBase64),
+                    ThumbnailUrl = !string.IsNullOrEmpty(t.ThumbnailBase64)
+                        ? $"/api/Video/{jobId}/person/{t.GlobalPersonId}/thumbnail"
+                        : null
+                }).OrderBy(t => t.FirstAppearanceSeconds)
+            });
+        }
+
+        /// <summary>
+        /// Get all video jobs from database with pagination
+        /// </summary>
+        [HttpGet("history")]
+        public async Task<IActionResult> GetVideoHistory(
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20,
+            CancellationToken ct = default)
+        {
+            using var scope = HttpContext.RequestServices.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+            var query = context.VideoJobs.OrderByDescending(v => v.CreatedAt);
+
+            var total = await query.CountAsync(ct);
+            var items = await query
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(v => new
+                {
+                    v.Id,
+                    v.JobId,
+                    v.FileName,
+                    State = v.State.ToString(),
+                    v.TotalFrames,
+                    v.ProcessedFrames,
+                    v.TotalDetections,
+                    v.UniquePersonCount,
+                    v.VideoDurationSeconds,
+                    v.ProcessingTimeSeconds,
+                    v.StartedAt,
+                    v.CompletedAt,
+                    v.CreatedAt
+                })
+                .ToListAsync(ct);
+
+            return Ok(new
+            {
+                Total = total,
+                Page = page,
+                PageSize = pageSize,
+                TotalPages = (int)Math.Ceiling(total / (double)pageSize),
+                Items = items
+            });
+        }
+
+        private static string GetContentType(string fileName)
+        {
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            return ext switch
+            {
+                ".mp4" => "video/mp4",
+                ".webm" => "video/webm",
+                ".avi" => "video/x-msvideo",
+                ".mov" => "video/quicktime",
+                ".mkv" => "video/x-matroska",
+                ".wmv" => "video/x-ms-wmv",
+                _ => "application/octet-stream"
+            };
+        }
+
+        /// <summary>
         /// Get all video jobs from database
         /// </summary>
         [HttpGet("db/all")]

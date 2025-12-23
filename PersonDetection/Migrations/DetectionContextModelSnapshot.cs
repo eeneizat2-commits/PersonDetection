@@ -351,6 +351,10 @@ namespace PersonDetection.Migrations
                     b.Property<int>("State")
                         .HasColumnType("int");
 
+                    b.Property<string>("StoredFilePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<int>("TotalDetections")
                         .HasColumnType("int");
 

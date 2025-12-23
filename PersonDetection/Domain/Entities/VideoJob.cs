@@ -7,6 +7,7 @@ namespace PersonDetection.Domain.Entities
     {
         public Guid JobId { get; set; }
         public string FileName { get; set; } = string.Empty;
+        public string? StoredFilePath { get; set; }  // 👈 Path to saved video in uploads folder
         public string? OriginalFilePath { get; set; }
         public string? VideoDataBase64 { get; set; }  // Store video as base64
         public VideoJobState State { get; set; } = VideoJobState.Queued;

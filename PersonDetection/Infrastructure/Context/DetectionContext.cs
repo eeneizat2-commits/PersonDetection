@@ -107,6 +107,7 @@ namespace PersonDetection.Infrastructure.Context
                 builder.HasIndex(x => x.CreatedAt);
                 builder.Property(x => x.FileName).HasMaxLength(500).IsRequired();
                 builder.Property(x => x.OriginalFilePath).HasMaxLength(1000);
+                builder.Property(x => x.StoredFilePath).HasMaxLength(1000);
                 builder.Property(x => x.VideoDataBase64).HasColumnType("nvarchar(max)");
                 builder.Property(x => x.ErrorMessage).HasMaxLength(2000);
                 builder.Ignore(x => x.DomainEvents);

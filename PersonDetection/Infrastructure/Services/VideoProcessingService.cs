@@ -336,6 +336,8 @@ namespace PersonDetection.Infrastructure.Services
                 extractFeatures = false;
             }
 
+            _logger.LogInformation("🎬 Queueing video job {JobId}: {FileName}", jobId.ToString()[..8], fileName);
+
             var job = new VideoJobInternal
             {
                 JobId = jobId,
@@ -343,7 +345,7 @@ namespace PersonDetection.Infrastructure.Services
                 FileName = fileName,
                 FrameSkip = Math.Max(1, frameSkip),
                 ExtractFeatures = extractFeatures,
-                SaveVideoToDb = false,  // Don't save video as base64 (too slow for large files)
+                SaveVideoToDb = false,
                 State = VideoProcessingState.Queued,
                 StartedAt = DateTime.UtcNow
             };
@@ -351,13 +353,18 @@ namespace PersonDetection.Infrastructure.Services
             _jobs[jobId] = job;
             _videoMatchers[jobId] = new VideoIdentityMatcher(0.70f, _logger, debugMode: true);
 
-            // Create initial database record (quick - no video data)
+            // Create initial database record - MUST succeed before queueing
             await CreateVideoJobInDatabaseAsync(job, ct);
+
+            if (job.DbId <= 0)
+            {
+                _logger.LogWarning("⚠️ VideoJob not saved to DB, but continuing with in-memory processing");
+            }
 
             await _processingQueue.Writer.WriteAsync(job, ct);
 
-            _logger.LogInformation("Video job {JobId} queued: {FileName}, FrameSkip={Skip}, ReID={ReId}",
-                jobId.ToString()[..8], fileName, frameSkip, extractFeatures);
+            _logger.LogInformation("✅ Video job {JobId} queued successfully. DbId: {DbId}",
+                jobId.ToString()[..8], job.DbId);
         }
 
         /// <summary>
@@ -367,31 +374,60 @@ namespace PersonDetection.Infrastructure.Services
         {
             try
             {
+                _logger.LogInformation("📝 Creating VideoJob in database for job {JobId}...", job.JobId.ToString()[..8]);
+
                 using var scope = _scopeFactory.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+                // Check if already exists
+                var existing = await context.VideoJobs.FirstOrDefaultAsync(v => v.JobId == job.JobId, ct);
+                if (existing != null)
+                {
+                    _logger.LogWarning("VideoJob {JobId} already exists with DbId {DbId}", job.JobId, existing.Id);
+                    job.DbId = existing.Id;
+                    return;
+                }
 
                 var videoJob = new VideoJob
                 {
                     JobId = job.JobId,
                     FileName = job.FileName,
                     OriginalFilePath = job.FilePath,
+                    StoredFilePath = job.FilePath,
                     FrameSkip = job.FrameSkip,
                     State = VideoJobState.Queued,
                     CreatedAt = DateTime.UtcNow,
-                    StartedAt = DateTime.UtcNow
-                    // NO VideoDataBase64 - too slow!
+                    StartedAt = DateTime.UtcNow,
+                    VideoDataBase64 = null,
+                    TotalFrames = 0,
+                    ProcessedFrames = 0,
+                    TotalDetections = 0,
+                    UniquePersonCount = 0,
+                    VideoDurationSeconds = 0,
+                    VideoFps = 0,
+                    ProcessingTimeSeconds = 0
                 };
 
                 context.VideoJobs.Add(videoJob);
                 await context.SaveChangesAsync(ct);
 
                 job.DbId = videoJob.Id;
-                _logger.LogInformation("💾 Video job created in database with Id: {Id}", videoJob.Id);
+                _logger.LogInformation("✅ VideoJob created in database with Id: {Id}, JobId: {JobId}",
+                    videoJob.Id, job.JobId.ToString()[..8]);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create video job in database");
-                // Continue anyway - in-memory processing will still work
+                _logger.LogError(ex, "❌ Failed to create VideoJob in database for job {JobId}. Error: {Error}",
+                    job.JobId.ToString()[..8], ex.Message);
+
+                // Log inner exception if exists
+                if (ex.InnerException != null)
+                {
+                    _logger.LogError("Inner exception: {InnerError}", ex.InnerException.Message);
+                }
+
+                // Set DbId to -1 to indicate failure
+                job.DbId = -1;
             }
         }
 
@@ -982,7 +1018,7 @@ namespace PersonDetection.Infrastructure.Services
             {
                 job.Cts.Dispose();
                 _videoMatchers.TryRemove(jobId, out _);
-                try { if (File.Exists(job.FilePath)) File.Delete(job.FilePath); } catch { }
+                //try { if (File.Exists(job.FilePath)) File.Delete(job.FilePath); } catch { }
             }
         }
 
