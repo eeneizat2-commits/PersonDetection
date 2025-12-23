@@ -361,3 +361,9 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/PersonDetection/Infrastructure/Models/osnet_x1_0.onnx
+/PersonDetection/Infrastructure/Models/yolo11s.onnx
+/PersonDetection/Infrastructure/Models/osnet_x1_0.onnx.data
+/PersonDetection/Infrastructure/Models/yolov8l.onnx
+/PersonDetection/Infrastructure/Models/yolov8n.onnx
+/PersonDetection/Infrastructure/Models/yolov8s.onnx
