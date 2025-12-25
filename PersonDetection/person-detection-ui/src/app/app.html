@@ -1,0 +1,36 @@
+<!-- src/app/app.html -->
+<mat-toolbar color="primary" class="app-toolbar">
+  <button mat-icon-button (click)="sidenav.toggle()">
+    <mat-icon>menu</mat-icon>
+  </button>
+  <span class="title">Person Detection System</span>
+  <span class="spacer"></span>
+
+  <div class="connection-status" [class.connected]="isConnected$ | async">
+    <mat-icon>{{ (isConnected$ | async) ? 'wifi' : 'wifi_off' }}</mat-icon>
+    <span>{{ (isConnected$ | async) ? 'Connected' : 'Disconnected' }}</span>
+  </div>
+</mat-toolbar>
+
+<mat-sidenav-container class="sidenav-container">
+  <mat-sidenav #sidenav mode="side" opened class="sidenav">
+    <mat-nav-list>
+      <a mat-list-item routerLink="/dashboard" routerLinkActive="active">
+        <mat-icon matListItemIcon>dashboard</mat-icon>
+        <span matListItemTitle>Dashboard</span>
+      </a>
+      <a mat-list-item routerLink="/videos" routerLinkActive="active">
+        <mat-icon matListItemIcon>video_library</mat-icon>
+        <span matListItemTitle>Video Analysis</span>
+      </a>
+      <a mat-list-item routerLink="/camera/0" routerLinkActive="active">
+        <mat-icon matListItemIcon>videocam</mat-icon>
+        <span matListItemTitle>Webcam</span>
+      </a>
+    </mat-nav-list>
+  </mat-sidenav>
+
+  <mat-sidenav-content class="content">
+    <router-outlet></router-outlet>
+  </mat-sidenav-content>
+</mat-sidenav-container>

@@ -1,0 +1,39 @@
+<!-- src/app/features/camera-controls/camera-controls.component.html -->
+<mat-card class="controls-card">
+    <mat-card-header>
+        <mat-icon mat-card-avatar>add_circle</mat-icon>
+        <mat-card-title>Add New Camera</mat-card-title>
+        <mat-card-subtitle>Add IP camera or video source</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+        <div class="form-row">
+            <mat-form-field appearance="outline">
+                <mat-label>Camera Name</mat-label>
+                <input matInput [(ngModel)]="newCamera.name" placeholder="e.g., Front Door">
+                <mat-icon matPrefix>label</mat-icon>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+                <mat-label>Stream URL</mat-label>
+                <input matInput [(ngModel)]="newCamera.url" placeholder="rtsp://... or 0 for webcam">
+                <mat-icon matPrefix>link</mat-icon>
+            </mat-form-field>
+
+            <button mat-raised-button color="primary" (click)="addCamera()">
+                <mat-icon>add</mat-icon>
+                Add Camera
+            </button>
+        </div>
+
+        <div class="url-hints">
+            <p><strong>URL Examples:</strong></p>
+            <ul>
+                <li><code>0</code> - Local webcam</li>
+                <li><code>rtsp://user:pass&#64;192.168.1.100:554/stream</code> - RTSP stream</li>
+                <li><code>http://192.168.1.100/video</code> - HTTP stream</li>
+                <li><code>C:\videos\test.mp4</code> - Video file</li>
+            </ul>
+        </div>
+    </mat-card-content>
+</mat-card>

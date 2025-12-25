@@ -1,0 +1,125 @@
+<!-- src/app/features/video-upload-dialog/video-upload-dialog.component.html -->
+
+<div class="upload-dialog">
+    <h2 mat-dialog-title>
+        <mat-icon>video_library</mat-icon>
+        Upload Video for Detection
+    </h2>
+
+    <mat-dialog-content>
+        <!-- Drop Zone -->
+        <div class="drop-zone" [class.dragging]="isDragging()" [class.has-file]="selectedFile()"
+            (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)"
+            (click)="fileInput.click()">
+
+            <input #fileInput type="file" accept="video/*,.mp4,.avi,.mov,.mkv,.webm,.wmv" hidden
+                (change)="onFileSelected($event)">
+
+            @if (!selectedFile()) {
+            <mat-icon class="upload-icon">cloud_upload</mat-icon>
+            <p class="drop-text">Drag & drop video file here</p>
+            <p class="drop-hint">or click to browse</p>
+            <p class="supported-formats">Supported: MP4, AVI, MOV, MKV, WebM, WMV (max 500MB)</p>
+            } @else {
+            <mat-icon class="file-icon">movie</mat-icon>
+            <p class="file-name">{{ selectedFile()?.name }}</p>
+            <p class="file-size">{{ formatFileSize(selectedFile()?.size || 0) }}</p>
+            <button mat-button color="warn" (click)="clearFile($event)">
+                <mat-icon>close</mat-icon>
+                Remove
+            </button>
+            }
+        </div>
+
+        <!-- Upload Progress -->
+        @if (uploadProgress()) {
+        <div class="progress-section">
+            <div class="progress-header">
+                <span>{{ getProgressLabel() }}</span>
+                <span>{{ uploadProgress()?.progress }}%</span>
+            </div>
+            <mat-progress-bar [mode]="uploadProgress()?.state === 'processing' ? 'indeterminate' : 'determinate'"
+                [value]="uploadProgress()?.progress">
+            </mat-progress-bar>
+            @if (uploadProgress()?.state === 'uploading') {
+            <p class="progress-detail">
+                {{ formatFileSize(uploadProgress()?.loaded || 0) }} / {{ formatFileSize(uploadProgress()?.total || 0) }}
+            </p>
+            }
+        </div>
+        }
+
+        <!-- Options -->
+        @if (!isUploading()) {
+        <div class="options-section">
+            <h3>Processing Options</h3>
+
+            <div class="option-row">
+                <mat-form-field appearance="outline" class="frame-skip-field">
+                    <mat-label>Frame Skip</mat-label>
+                    <input matInput type="number" [(ngModel)]="frameSkip" min="1" max="30">
+                    <mat-hint>Process every Nth frame (higher = faster)</mat-hint>
+                </mat-form-field>
+
+                <mat-icon matTooltip="Process every Nth frame. Higher values process faster but may miss detections."
+                    class="help-icon">
+                    help_outline
+                </mat-icon>
+            </div>
+
+            <mat-checkbox [(ngModel)]="extractFeatures" color="primary">
+                <div class="checkbox-content">
+                    <span>Enable Person Re-identification</span>
+                    <small>Track unique persons across frames (slower but more accurate)</small>
+                </div>
+            </mat-checkbox>
+        </div>
+        }
+
+        <!-- Result -->
+        @if (uploadResult()) {
+        <div class="result-section success">
+            <mat-icon>check_circle</mat-icon>
+            <div class="result-info">
+                <p class="result-title">Upload Successful!</p>
+                <p class="result-message">{{ uploadResult()?.message }}</p>
+                <p class="job-id">Job ID: {{ uploadResult()?.jobId }}</p>
+            </div>
+        </div>
+        }
+
+        <!-- Error -->
+        @if (errorMessage()) {
+        <div class="result-section error">
+            <mat-icon>error</mat-icon>
+            <div class="result-info">
+                <p class="result-title">Upload Failed</p>
+                <p class="result-message">{{ errorMessage() }}</p>
+            </div>
+        </div>
+        }
+    </mat-dialog-content>
+
+    <mat-dialog-actions align="end">
+        <button mat-button mat-dialog-close [disabled]="isUploading()">
+            {{ uploadResult() ? 'Close' : 'Cancel' }}
+        </button>
+
+        @if (!uploadResult()) {
+        <button mat-raised-button color="primary" [disabled]="!selectedFile() || isUploading()" (click)="upload()">
+            @if (isUploading()) {
+            <mat-icon class="spin">sync</mat-icon>
+            Uploading...
+            } @else {
+            <mat-icon>cloud_upload</mat-icon>
+            Upload & Process
+            }
+        </button>
+        } @else {
+        <button mat-raised-button color="primary" (click)="viewJob()">
+            <mat-icon>visibility</mat-icon>
+            View Progress
+        </button>
+        }
+    </mat-dialog-actions>
+</div>

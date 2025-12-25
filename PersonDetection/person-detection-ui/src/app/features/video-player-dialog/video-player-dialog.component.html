@@ -1,0 +1,47 @@
+<!-- src/app/features/video-player-dialog/video-player-dialog.component.html -->
+
+<div class="video-player-dialog">
+    <div class="dialog-header">
+        <h2>
+            <mat-icon>movie</mat-icon>
+            {{ fileName() }}
+        </h2>
+        <button mat-icon-button (click)="close()">
+            <mat-icon>close</mat-icon>
+        </button>
+    </div>
+
+    <div class="video-container">
+        @if (isLoading()) {
+        <div class="loading-overlay">
+            <mat-spinner diameter="48"></mat-spinner>
+            <p>Loading video...</p>
+        </div>
+        }
+
+        @if (hasError()) {
+        <div class="error-overlay">
+            <mat-icon>error_outline</mat-icon>
+            <p>{{ errorMessage() }}</p>
+            <button mat-raised-button color="primary" (click)="close()">Close</button>
+        </div>
+        }
+
+        @if (!hasError() && videoUrl) {
+        <video controls autoplay [src]="videoUrl" (loadeddata)="onVideoLoaded()" (error)="onVideoError($event)">
+            Your browser does not support the video tag.
+        </video>
+        }
+    </div>
+
+    <div class="dialog-actions">
+        <button mat-button (click)="close()">
+            <mat-icon>close</mat-icon>
+            Close
+        </button>
+        <button mat-raised-button color="primary" (click)="downloadVideo()">
+            <mat-icon>download</mat-icon>
+            Download
+        </button>
+    </div>
+</div>

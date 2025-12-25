@@ -1,0 +1,244 @@
+// src/app/features/video-upload-dialog/video-upload-dialog.component.scss
+
+.upload-dialog {
+  min-width: 500px;
+}
+
+h2[mat-dialog-title] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 20px 24px;
+  font-size: 1.4rem;
+
+  mat-icon {
+    color: #3b82f6;
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
+  }
+}
+
+mat-dialog-content {
+  padding: 0 24px 24px;
+  max-height: 70vh;
+}
+
+.drop-zone {
+  border: 2px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: #f8fafc;
+
+  &:hover {
+    border-color: #3b82f6;
+    background: #eff6ff;
+  }
+
+  &.dragging {
+    border-color: #3b82f6;
+    background: #dbeafe;
+    transform: scale(1.02);
+  }
+
+  &.has-file {
+    border-style: solid;
+    border-color: #22c55e;
+    background: #f0fdf4;
+  }
+
+  .upload-icon {
+    font-size: 64px;
+    width: 64px;
+    height: 64px;
+    color: #94a3b8;
+    margin-bottom: 12px;
+  }
+
+  .file-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    color: #22c55e;
+    margin-bottom: 8px;
+  }
+
+  .drop-text {
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: #475569;
+    margin: 0 0 4px;
+  }
+
+  .drop-hint {
+    color: #64748b;
+    margin: 0 0 8px;
+    font-size: 0.9rem;
+  }
+
+  .supported-formats {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    margin: 0;
+  }
+
+  .file-name {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e293b;
+    margin: 0 0 4px;
+    word-break: break-all;
+  }
+
+  .file-size {
+    color: #64748b;
+    margin: 0 0 12px;
+    font-size: 0.9rem;
+  }
+}
+
+.progress-section {
+  margin-top: 20px;
+  padding: 16px;
+  background: #f1f5f9;
+  border-radius: 8px;
+
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #475569;
+  }
+
+  mat-progress-bar {
+    height: 8px;
+    border-radius: 4px;
+  }
+
+  .progress-detail {
+    margin: 8px 0 0;
+    font-size: 0.8rem;
+    color: #64748b;
+    text-align: center;
+  }
+}
+
+.options-section {
+  margin-top: 24px;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 8px;
+
+  h3 {
+    margin: 0 0 16px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #334155;
+  }
+
+  .option-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .frame-skip-field {
+    flex: 1;
+    max-width: 200px;
+  }
+
+  .help-icon {
+    color: #94a3b8;
+    cursor: help;
+    margin-top: 12px;
+  }
+
+  mat-checkbox {
+    .checkbox-content {
+      display: flex;
+      flex-direction: column;
+
+      small {
+        color: #64748b;
+        font-size: 0.8rem;
+      }
+    }
+  }
+}
+
+.result-section {
+  margin-top: 20px;
+  padding: 16px;
+  border-radius: 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+
+  &.success {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+
+    mat-icon {
+      color: #22c55e;
+    }
+  }
+
+  &.error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+
+    mat-icon {
+      color: #ef4444;
+    }
+  }
+
+  mat-icon {
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
+  }
+
+  .result-info {
+    flex: 1;
+
+    .result-title {
+      margin: 0 0 4px;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+
+    .result-message {
+      margin: 0 0 8px;
+      font-size: 0.9rem;
+      color: #475569;
+    }
+
+    .job-id {
+      margin: 0;
+      font-size: 0.8rem;
+      color: #64748b;
+      font-family: monospace;
+    }
+  }
+}
+
+mat-dialog-actions {
+  padding: 16px 24px;
+  gap: 8px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

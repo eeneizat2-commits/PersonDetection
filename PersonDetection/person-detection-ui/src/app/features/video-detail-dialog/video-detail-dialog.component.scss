@@ -1,0 +1,369 @@
+// src/app/features/video-detail-dialog/video-detail-dialog.component.scss
+
+.detail-dialog {
+  min-width: 700px;
+  max-width: 900px;
+}
+
+h2[mat-dialog-title] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 20px 24px;
+  font-size: 1.4rem;
+
+  mat-icon {
+    color: #3b82f6;
+  }
+}
+
+mat-dialog-content {
+  padding: 0 24px 24px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  color: #64748b;
+
+  p {
+    margin-top: 16px;
+  }
+}
+
+.video-header {
+  padding-bottom: 16px;
+
+  .video-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+
+    h3 {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #1e293b;
+    }
+  }
+
+  .progress-section {
+    background: #f8fafc;
+    padding: 12px;
+    border-radius: 8px;
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 0.85rem;
+      color: #475569;
+    }
+
+    mat-progress-bar {
+      height: 8px;
+      border-radius: 4px;
+    }
+
+    .progress-detail {
+      margin: 8px 0 0;
+      font-size: 0.8rem;
+      color: #64748b;
+      text-align: center;
+    }
+  }
+}
+
+mat-divider {
+  margin: 16px 0;
+}
+
+.detail-tabs {
+  margin-top: 16px;
+}
+
+.tab-content {
+  padding: 16px 0;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+
+  @media (max-width: 768px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .stat-box {
+    background: #f8fafc;
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: transform 0.2s;
+
+    &:hover {
+      transform: translateY(-2px);
+    }
+
+    &.highlight {
+      background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+      color: white;
+
+      mat-icon {
+        color: white;
+      }
+
+      .stat-info .label {
+        color: rgba(255,255,255,0.8);
+      }
+    }
+
+    mat-icon {
+      font-size: 28px;
+      width: 28px;
+      height: 28px;
+      color: #64748b;
+    }
+
+    .stat-info {
+      display: flex;
+      flex-direction: column;
+
+      .value {
+        font-size: 1.3rem;
+        font-weight: 700;
+      }
+
+      .label {
+        font-size: 0.75rem;
+        color: #64748b;
+      }
+    }
+  }
+}
+
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.timeline-item {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 10px;
+
+  .person-avatar-container {
+    position: relative;
+    flex-shrink: 0;
+
+    .person-thumbnail {
+      width: 64px;
+      height: 80px;
+      object-fit: cover;
+      border-radius: 8px;
+      border: 2px solid #e2e8f0;
+    }
+
+    .person-avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 700;
+      font-size: 0.8rem;
+    }
+  }
+
+  .person-info {
+    flex: 1;
+
+    .person-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+
+      .person-id {
+        font-weight: 600;
+        color: #1e293b;
+      }
+    }
+
+    .timeline-bar-container {
+      height: 8px;
+      background: #e2e8f0;
+      border-radius: 4px;
+      position: relative;
+      margin-bottom: 8px;
+
+      .timeline-bar {
+        position: absolute;
+        height: 100%;
+        border-radius: 4px;
+        min-width: 4px;
+      }
+    }
+
+    .person-details {
+      display: flex;
+      gap: 16px;
+      font-size: 0.8rem;
+      color: #64748b;
+      flex-wrap: wrap;
+
+      span {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+
+        mat-icon {
+          font-size: 14px;
+          width: 14px;
+          height: 14px;
+        }
+      }
+    }
+  }
+}
+
+.detections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.detection-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border-left: 3px solid #e2e8f0;
+
+  &.has-persons {
+    border-left-color: #22c55e;
+  }
+
+  .frame-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 100px;
+
+    .frame-number {
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: #1e293b;
+    }
+
+    .timestamp {
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+  }
+
+  .detection-count {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    background: #e2e8f0;
+    border-radius: 20px;
+    font-weight: 600;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    &.active {
+      background: #dcfce7;
+      color: #166534;
+    }
+  }
+
+  .persons-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+
+    .more {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+  }
+}
+
+.showing-limited {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.empty-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  color: #94a3b8;
+
+  mat-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    margin-bottom: 12px;
+  }
+
+  p {
+    margin: 0;
+  }
+}
+
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  color: #ef4444;
+
+  mat-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    margin-bottom: 12px;
+  }
+}
+
+mat-chip {
+  &.queued { background: #f1f5f9 !important; color: #64748b !important; }
+  &.processing { background: #fef3c7 !important; color: #b45309 !important; }
+  &.completed, &.Completed { background: #dcfce7 !important; color: #166534 !important; }
+  &.failed, &.Failed { background: #fee2e2 !important; color: #dc2626 !important; }
+  &.cancelled, &.Cancelled { background: #f3f4f6 !important; color: #6b7280 !important; }
+}
+
+mat-dialog-actions {
+  padding: 16px 24px;
+  gap: 8px;
+}

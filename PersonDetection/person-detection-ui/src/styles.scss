@@ -1,0 +1,128 @@
+@use '@angular/material' as mat;
+
+/* Required for Angular Material */
+@include mat.core();
+
+/* =================================================
+   DASHBOARD COLOR SYSTEM
+================================================= */
+:root {
+  /* Brand */
+  --primary: #1976d2;        /* Blue */
+  --primary-contrast: #ffffff;
+
+  --secondary: #26a69a;      /* Teal */
+  --secondary-contrast: #ffffff;
+
+  /* Layout */
+  --background: #f4f6f8;     /* Page background */
+  --surface: #ffffff;        /* Cards / panels */
+  --sidebar: #1e293b;        /* Sidebar dark */
+  --sidebar-text: #e5e7eb;
+
+  /* Text */
+  --text-primary: #1f2937;
+  --text-secondary: #6b7280;
+
+  /* Status */
+  --success: #16a34a;
+  --warning: #f59e0b;
+  --error: #dc2626;
+
+  /* Border / shadow */
+  --border: #e5e7eb;
+}
+
+/* =================================================
+   GLOBAL BASE
+================================================= */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: Roboto, "Helvetica Neue", Arial, sans-serif;
+  background-color: var(--background);
+  color: var(--text-primary);
+}
+
+/* =================================================
+   TOOLBAR (Top Bar)
+================================================= */
+.mat-toolbar {
+  background-color: var(--primary) !important;
+  color: var(--primary-contrast) !important;
+}
+
+/* =================================================
+   SIDEBAR / NAV
+================================================= */
+.mat-sidenav {
+  background-color: var(--sidebar) !important;
+  color: var(--sidebar-text) !important;
+}
+
+.mat-sidenav a {
+  color: var(--sidebar-text);
+  text-decoration: none;
+}
+
+.mat-sidenav a.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* =================================================
+   CARDS
+================================================= */
+.mat-mdc-card {
+  background-color: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* =================================================
+   BUTTONS
+================================================= */
+.mat-mdc-raised-button.mat-primary {
+  background-color: var(--primary);
+  color: var(--primary-contrast);
+}
+
+.mat-mdc-raised-button.mat-accent {
+  background-color: var(--secondary);
+  color: var(--secondary-contrast);
+}
+
+/* =================================================
+   STATUS COLORS (for badges / labels)
+================================================= */
+.status-success {
+  color: var(--success);
+}
+
+.status-warning {
+  color: var(--warning);
+}
+
+.status-error {
+  color: var(--error);
+}
+
+/* =================================================
+   SCROLLBAR (Dashboard style)
+================================================= */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

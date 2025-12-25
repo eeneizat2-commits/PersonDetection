@@ -1,0 +1,59 @@
+<!-- src/app/features/camera-view/camera-view.component.html -->
+<div class="camera-view" [class.fullscreen]="isFullscreen">
+    <mat-toolbar class="view-toolbar">
+        <button mat-icon-button (click)="goBack()">
+            <mat-icon>arrow_back</mat-icon>
+        </button>
+        <span>{{ camera?.name || 'Camera ' + cameraId }}</span>
+        <span class="spacer"></span>
+
+        @if (currentDetection) {
+        <div class="live-stats">
+            <mat-icon>person</mat-icon>
+            <span>{{ currentDetection.count }} persons</span>
+            <span class="separator">|</span>
+            <span>{{ currentDetection.uniqueCount }} unique</span>
+        </div>
+        }
+
+        <button mat-icon-button (click)="toggleFullscreen()" matTooltip="Toggle Fullscreen">
+            <mat-icon>{{ isFullscreen ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
+        </button>
+    </mat-toolbar>
+
+    <div class="stream-container">
+        @if (streamUrl) {
+            <img [src]="streamUrl" 
+                 alt="Camera stream" 
+                 (error)="$any($event.target).style.display='none'">
+        } @else {
+            <div class="no-stream">
+                <mat-icon>videocam_off</mat-icon>
+                <p>Loading camera stream...</p>
+            </div>
+        }
+
+        @if (currentDetection) {
+        <div class="info-overlay">
+            <div class="detection-info">
+                <div class="info-row">
+                    <mat-icon>people</mat-icon>
+                    <span>{{ currentDetection.count }} Persons Detected</span>
+                </div>
+                <div class="info-row">
+                    <mat-icon>fingerprint</mat-icon>
+                    <span>{{ currentDetection.uniqueCount }} Unique Today</span>
+                </div>
+                <div class="info-row">
+                    <mat-icon>speed</mat-icon>
+                    <span>{{ currentDetection.fps | number:'1.0-0' }} FPS</span>
+                </div>
+                <div class="info-row">
+                    <mat-icon>schedule</mat-icon>
+                    <span>{{ currentDetection.timestamp | date:'HH:mm:ss' }}</span>
+                </div>
+            </div>
+        </div>
+        }
+    </div>
+</div>

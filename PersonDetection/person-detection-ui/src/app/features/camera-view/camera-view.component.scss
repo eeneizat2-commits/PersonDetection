@@ -1,0 +1,87 @@
+// src/app/features/camera-view/camera-view.component.scss
+.camera-view {
+  height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  margin: -24px;
+
+  &.fullscreen {
+    height: 100vh;
+    margin: 0;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+  }
+}
+
+.view-toolbar {
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+
+  .spacer {
+    flex: 1;
+  }
+
+  .live-stats {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(76, 175, 80, 0.3);
+    padding: 4px 16px;
+    border-radius: 16px;
+    margin-right: 16px;
+
+    mat-icon {
+      color: #4caf50;
+    }
+  }
+}
+
+.stream-container {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+
+  .info-overlay {
+    position: absolute;
+    bottom: 24px;
+    left: 24px;
+    right: 24px;
+    display: flex;
+    justify-content: space-between;
+
+    .detection-info {
+      background: rgba(0, 0, 0, 0.7);
+      padding: 16px 24px;
+      border-radius: 8px;
+      color: white;
+
+      .info-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+
+        &:last-child {
+          margin-bottom: 0;
+        }
+
+        mat-icon {
+          color: #4caf50;
+        }
+      }
+    }
+  }
+}

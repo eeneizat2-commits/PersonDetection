@@ -1,0 +1,15 @@
+{
+    "/api": {
+        "target": "https://localhost:44375",
+        "secure": false,
+        "changeOrigin": true,
+        "logLevel": "debug"
+    },
+    "/detectionHub": {
+        "target": "https://localhost:44375",
+        "secure": false,
+        "changeOrigin": true,
+        "ws": true,
+        "logLevel": "debug"
+    }
+}

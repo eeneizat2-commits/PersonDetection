@@ -1,0 +1,289 @@
+<!-- src/app/features/video-jobs/video-jobs.component.html -->
+
+<div class="video-jobs-container">
+    <!-- Header -->
+    <header class="page-header">
+        <div class="header-content">
+            <div class="title-section">
+                <h1>
+                    <mat-icon>video_library</mat-icon>
+                    Video Processing
+                </h1>
+                <p class="subtitle">Upload and analyze videos for person detection</p>
+            </div>
+
+            <button mat-fab extended color="primary" (click)="openUploadDialog()">
+                <mat-icon>cloud_upload</mat-icon>
+                Upload Video
+            </button>
+        </div>
+    </header>
+
+    <!-- Stats -->
+    <section class="stats-section">
+        <div class="stat-card">
+            <mat-icon>folder</mat-icon>
+            <div class="stat-info">
+                <span class="stat-value">{{ jobs().length + historyTotal() }}</span>
+                <span class="stat-label">Total Jobs</span>
+            </div>
+        </div>
+
+        <div class="stat-card processing">
+            <mat-icon>sync</mat-icon>
+            <div class="stat-info">
+                <span class="stat-value">{{ processingCount() }}</span>
+                <span class="stat-label">Processing</span>
+            </div>
+        </div>
+
+        <div class="stat-card completed">
+            <mat-icon>check_circle</mat-icon>
+            <div class="stat-info">
+                <span class="stat-value">{{ completedCount() + historyTotal() }}</span>
+                <span class="stat-label">Completed</span>
+            </div>
+        </div>
+
+        <div class="stat-card persons">
+            <mat-icon>people</mat-icon>
+            <div class="stat-info">
+                <span class="stat-value">{{ totalUniquePersons() + totalHistoryPersons() }}</span>
+                <span class="stat-label">Unique Persons</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tabs for Active Jobs and History -->
+    <mat-tab-group class="main-tabs" animationDuration="200ms">
+        <!-- Active Jobs Tab -->
+        <mat-tab>
+            <ng-template mat-tab-label>
+                <mat-icon>pending_actions</mat-icon>
+                <span>Active Jobs</span>
+                @if (processingCount() > 0) {
+                <span class="badge">{{ processingCount() }}</span>
+                }
+            </ng-template>
+
+            <!-- Loading -->
+            @if (isLoading()) {
+            <div class="loading-container">
+                <mat-spinner diameter="40"></mat-spinner>
+                <p>Loading jobs...</p>
+            </div>
+            }
+
+            <!-- Empty State -->
+            @if (!isLoading() && jobs().length === 0) {
+            <div class="empty-state">
+                <mat-icon>video_library</mat-icon>
+                <h3>No active jobs</h3>
+                <p>Upload a video to start detecting persons</p>
+                <button mat-raised-button color="primary" (click)="openUploadDialog()">
+                    <mat-icon>cloud_upload</mat-icon>
+                    Upload Video
+                </button>
+            </div>
+            }
+
+            <!-- Jobs Grid -->
+            @if (!isLoading() && jobs().length > 0) {
+            <section class="jobs-section">
+                <div class="jobs-grid">
+                    @for (job of jobs(); track job.jobId) {
+                    <mat-card class="job-card" [class]="'state-' + job.state">
+                        <mat-card-header>
+                            <mat-icon mat-card-avatar [class]="getStateClass(job.state)">
+                                {{ getStateIcon(job.state) }}
+                            </mat-icon>
+                            <mat-card-title>{{ job.fileName }}</mat-card-title>
+                            <mat-card-subtitle>
+                                <mat-chip [class]="getStateClass(job.state)" size="small">
+                                    {{ getStateLabel(job.state) }}
+                                </mat-chip>
+                            </mat-card-subtitle>
+
+                            <button mat-icon-button [matMenuTriggerFor]="jobMenu" class="menu-btn">
+                                <mat-icon>more_vert</mat-icon>
+                            </button>
+
+                            <mat-menu #jobMenu="matMenu">
+                                <button mat-menu-item (click)="viewDetails(job)">
+                                    <mat-icon>visibility</mat-icon>
+                                    <span>View Details</span>
+                                </button>
+                                @if (job.state === VideoProcessingState.Processing) {
+                                <button mat-menu-item (click)="cancelJob(job)">
+                                    <mat-icon>cancel</mat-icon>
+                                    <span>Cancel</span>
+                                </button>
+                                }
+                                @if (job.state !== VideoProcessingState.Processing) {
+                                <button mat-menu-item (click)="deleteJob(job)" class="delete-item">
+                                    <mat-icon>delete</mat-icon>
+                                    <span>Delete</span>
+                                </button>
+                                }
+                            </mat-menu>
+                        </mat-card-header>
+
+                        <mat-card-content>
+                            <!-- Progress for processing jobs -->
+                            @if (job.state === VideoProcessingState.Processing || job.state ===
+                            VideoProcessingState.Queued) {
+                            <div class="progress-section">
+                                <div class="progress-header">
+                                    <span>Progress</span>
+                                    <span>{{ job.progressPercent }}%</span>
+                                </div>
+                                <mat-progress-bar
+                                    [mode]="job.state === VideoProcessingState.Queued ? 'indeterminate' : 'determinate'"
+                                    [value]="job.progressPercent">
+                                </mat-progress-bar>
+                                <p class="progress-detail">
+                                    {{ job.processedFrames }} / {{ Math.ceil(job.totalFrames / 5) }} frames
+                                </p>
+                            </div>
+                            }
+
+                            <!-- Stats -->
+                            <div class="job-stats">
+                                <div class="stat">
+                                    <mat-icon>person</mat-icon>
+                                    <span>{{ job.totalPersonsDetected }} detections</span>
+                                </div>
+                                <div class="stat">
+                                    <mat-icon>fingerprint</mat-icon>
+                                    <span>{{ job.uniquePersonsDetected }} unique</span>
+                                </div>
+                            </div>
+
+                            <!-- Error message -->
+                            @if (job.errorMessage) {
+                            <div class="error-message">
+                                <mat-icon>error</mat-icon>
+                                <span>{{ job.errorMessage }}</span>
+                            </div>
+                            }
+
+                            <!-- Timestamps -->
+                            <div class="timestamps">
+                                <small>Started: {{ job.startedAt | date:'short' }}</small>
+                                @if (job.completedAt) {
+                                <small>Completed: {{ job.completedAt | date:'short' }}</small>
+                                }
+                            </div>
+                        </mat-card-content>
+
+                        <mat-card-actions align="end">
+                            @if (job.state === VideoProcessingState.Completed) {
+                            <button mat-button color="primary" (click)="viewDetails(job)">
+                                <mat-icon>assessment</mat-icon>
+                                View Results
+                            </button>
+                            }
+                        </mat-card-actions>
+                    </mat-card>
+                    }
+                </div>
+            </section>
+            }
+        </mat-tab>
+
+        <!-- Video History Tab -->
+        <mat-tab>
+            <ng-template mat-tab-label>
+                <mat-icon>history</mat-icon>
+                <span>Video History</span>
+                @if (historyTotal() > 0) {
+                <span class="badge secondary">{{ historyTotal() }}</span>
+                }
+            </ng-template>
+
+            <!-- History Loading -->
+            @if (historyLoading()) {
+            <div class="loading-container">
+                <mat-spinner diameter="40"></mat-spinner>
+                <p>Loading video history...</p>
+            </div>
+            }
+
+            <!-- Empty History -->
+            @if (!historyLoading() && videoHistory().length === 0) {
+            <div class="empty-state">
+                <mat-icon>folder_open</mat-icon>
+                <h3>No video history</h3>
+                <p>Completed videos will appear here</p>
+            </div>
+            }
+
+            <!-- History Grid -->
+            @if (!historyLoading() && videoHistory().length > 0) {
+            <section class="history-section">
+                <div class="history-grid">
+                    @for (video of videoHistory(); track video.jobId) {
+                    <mat-card class="history-card">
+                        <div class="video-preview" (click)="playVideo(video)">
+                            <mat-icon class="play-icon">play_circle_filled</mat-icon>
+                            <div class="video-duration">{{ formatDuration(video.videoDurationSeconds) }}</div>
+                        </div>
+
+                        <mat-card-content>
+                            <h3 class="video-title" [matTooltip]="video.fileName">{{ video.fileName }}</h3>
+
+                            <div class="video-meta">
+                                <span class="meta-item">
+                                    <mat-icon>people</mat-icon>
+                                    {{ video.uniquePersonCount }} persons
+                                </span>
+                                <span class="meta-item">
+                                    <mat-icon>visibility</mat-icon>
+                                    {{ video.totalDetections }} detections
+                                </span>
+                            </div>
+
+                            <div class="video-meta">
+                                <span class="meta-item">
+                                    <mat-icon>photo_library</mat-icon>
+                                    {{ video.processedFrames }} frames
+                                </span>
+                                <span class="meta-item">
+                                    <mat-icon>timer</mat-icon>
+                                    {{ formatProcessingTime(video.processingTimeSeconds) }}
+                                </span>
+                            </div>
+
+                            <div class="video-date">
+                                <mat-icon>calendar_today</mat-icon>
+                                {{ video.createdAt | date:'medium' }}
+                            </div>
+
+                            <mat-chip [class]="getStateClass(video.state)" size="small">
+                                {{ video.state }}
+                            </mat-chip>
+                        </mat-card-content>
+
+                        <mat-card-actions>
+                            <button mat-button color="primary" (click)="playVideo(video)">
+                                <mat-icon>play_arrow</mat-icon>
+                                Play
+                            </button>
+                            <button mat-button (click)="viewHistoryDetails(video)">
+                                <mat-icon>info</mat-icon>
+                                Details
+                            </button>
+                        </mat-card-actions>
+                    </mat-card>
+                    }
+                </div>
+
+                <!-- Pagination -->
+                <mat-paginator [length]="historyTotal()" [pageSize]="historyPageSize()" [pageIndex]="historyPage() - 1"
+                    [pageSizeOptions]="[5, 10, 20, 50]" (page)="onHistoryPageChange($event)" showFirstLastButtons>
+                </mat-paginator>
+            </section>
+            }
+        </mat-tab>
+    </mat-tab-group>
+</div>

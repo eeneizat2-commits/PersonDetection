@@ -1,0 +1,205 @@
+<!-- src/app/features/dashboard/dashboard.component.html -->
+<div class="dashboard">
+    <!-- Header -->
+    <header class="dashboard-header">
+        <div class="header-content">
+            <div class="title-section">
+                <h1>
+                    <mat-icon>dashboard</mat-icon>
+                    Camera Dashboard
+                </h1>
+                <p class="subtitle">Real-time person detection & tracking</p>
+            </div>
+
+            <button mat-fab extended color="primary" (click)="openAddDialog()">
+                <mat-icon>add_circle</mat-icon>
+                Add Camera
+            </button>
+        </div>
+    </header>
+
+    <!-- Stats Cards -->
+    <section class="stats-section">
+        <div class="stat-card">
+            <div class="stat-icon cameras">
+                <mat-icon>videocam</mat-icon>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">{{ cameras().length }}</span>
+                <span class="stat-label">Total Cameras</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon active">
+                <mat-icon>sensors</mat-icon>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">{{ activeCameras().length }}</span>
+                <span class="stat-label">Active</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon persons">
+                <mat-icon>person</mat-icon>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">{{ totalPersons() }}</span>
+                <span class="stat-label">Current Persons</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon unique">
+                <mat-icon>people</mat-icon>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">{{ totalUnique() }}</span>
+                <span class="stat-label">Unique Today</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Loading Indicator -->
+    @if (isLoading()) {
+    <mat-progress-bar mode="indeterminate" class="loading-bar"></mat-progress-bar>
+    }
+
+
+
+    <!-- Add after stats-section, before cameras-section -->
+
+    <!-- Quick Actions -->
+    <section class="quick-actions">
+        <mat-card class="action-card" (click)="openVideoUpload()">
+            <mat-icon>video_library</mat-icon>
+            <div class="action-info">
+                <h3>Upload Video</h3>
+                <p>Analyze video file for person detection</p>
+            </div>
+            <mat-icon class="arrow">arrow_forward</mat-icon>
+        </mat-card>
+    </section>
+
+
+
+
+    <!-- Camera Grid -->
+    <section class="cameras-section">
+        <h2>
+            <mat-icon>grid_view</mat-icon>
+            Cameras
+        </h2>
+
+        @if (cameras().length === 0 && !isLoading()) {
+        <div class="empty-state">
+            <mat-icon>videocam_off</mat-icon>
+            <h3>No cameras configured</h3>
+            <p>Add your first camera to get started</p>
+            <button mat-raised-button color="primary" (click)="openAddDialog()">
+                <mat-icon>add</mat-icon>
+                Add Camera
+            </button>
+        </div>
+        }
+
+        <div class="cameras-grid">
+            @for (camera of cameras(); track trackByCamera($index, camera)) {
+            <mat-card class="camera-card" [class.active]="camera.isActive" [class.inactive]="!camera.isActive">
+                <!-- Card Header -->
+                <mat-card-header>
+                    <div class="camera-avatar" [class.active]="camera.isActive">
+                        <mat-icon>{{ camera.isActive ? 'videocam' : 'videocam_off' }}</mat-icon>
+                    </div>
+
+                    <mat-card-title>{{ camera.name }}</mat-card-title>
+
+                    <mat-card-subtitle>
+                        <mat-chip [class]="camera.isActive ? 'status-active' : 'status-inactive'">
+                            <mat-icon>{{ camera.isActive ? 'check_circle' : 'cancel' }}</mat-icon>
+                            {{ camera.isActive ? 'Active' : 'Inactive' }}
+                        </mat-chip>
+                        <span class="camera-type">{{ getCameraTypeLabel(camera.type) }}</span>
+                    </mat-card-subtitle>
+
+                    <button mat-icon-button [matMenuTriggerFor]="cameraMenu" class="menu-button">
+                        <mat-icon>more_vert</mat-icon>
+                    </button>
+
+                    <mat-menu #cameraMenu="matMenu">
+                        <button mat-menu-item (click)="viewFullScreen(camera)" [disabled]="!camera.isActive">
+                            <mat-icon>fullscreen</mat-icon>
+                            <span>Full View</span>
+                        </button>
+                        <button mat-menu-item (click)="deleteCamera(camera, $event)" [disabled]="camera.isActive"
+                            class="delete-item">
+                            <mat-icon>delete</mat-icon>
+                            <span>Delete</span>
+                        </button>
+                    </mat-menu>
+                </mat-card-header>
+
+                <!-- Camera Content -->
+                <mat-card-content>
+                    @if (camera.isActive) {
+                    <div class="stream-container">
+                        <img [src]="getStreamUrl(camera)" alt="{{ camera.name }} stream" loading="lazy"
+                            (error)="$any($event.target).src = 'assets/no-signal.svg'">
+
+                        <!-- Detection Overlay -->
+                        <div class="detection-overlay">
+                            @if (getDetection(camera.id); as detection) {
+                            <div class="detection-badge">
+                                <mat-icon>person</mat-icon>
+                                <span class="count">{{ detection.count }}</span>
+                                <span class="unique">({{ detection.uniqueCount }} unique)</span>
+                            </div>
+                            <div class="fps-badge">
+                                {{ detection.fps | number:'1.0-0' }} FPS
+                            </div>
+                            }
+                        </div>
+                    </div>
+                    } @else {
+                    <div class="placeholder">
+                        <mat-icon>videocam_off</mat-icon>
+                        <p>Camera not active</p>
+                        <span class="url">{{ camera.url }}</span>
+                    </div>
+                    }
+                </mat-card-content>
+
+                <!-- Card Actions -->
+                <mat-card-actions align="end">
+                    @if (camera.isActive) {
+                    <button mat-button color="warn" (click)="stopCamera(camera)"
+                        [disabled]="isLoadingCamera(camera.id)">
+                        @if (isLoadingCamera(camera.id)) {
+                        <mat-spinner diameter="18"></mat-spinner>
+                        } @else {
+                        <mat-icon>stop</mat-icon>
+                        }
+                        Stop
+                    </button>
+                    <button mat-button color="primary" (click)="viewFullScreen(camera)">
+                        <mat-icon>fullscreen</mat-icon>
+                        View
+                    </button>
+                    } @else {
+                    <button mat-raised-button color="primary" (click)="startCamera(camera)"
+                        [disabled]="isLoadingCamera(camera.id) || !camera.isEnabled">
+                        @if (isLoadingCamera(camera.id)) {
+                        <mat-spinner diameter="18"></mat-spinner>
+                        } @else {
+                        <mat-icon>play_arrow</mat-icon>
+                        }
+                        Start
+                    </button>
+                    }
+                </mat-card-actions>
+            </mat-card>
+            }
+        </div>
+    </section>
+</div>

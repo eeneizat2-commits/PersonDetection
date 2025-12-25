@@ -1,0 +1,63 @@
+// src/app/app.component.scss
+.app-toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+
+    .title {
+        margin-left: 16px;
+        font-size: 20px;
+    }
+
+    .spacer {
+        flex: 1;
+    }
+
+    .connection-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 12px;
+        border-radius: 16px;
+        background: rgba(255, 0, 0, 0.2);
+        color: #ff6b6b;
+        font-size: 14px;
+
+        &.connected {
+            background: rgba(0, 255, 0, 0.2);
+            color: #51cf66;
+        }
+
+        mat-icon {
+            font-size: 18px;
+            width: 18px;
+            height: 18px;
+        }
+    }
+}
+
+.sidenav-container {
+    position: absolute;
+    top: 64px;
+    bottom: 0;
+    left: 0;
+    right: 0;
+}
+
+.sidenav {
+    width: 250px;
+    background: #f5f5f5;
+
+    .active {
+        background: rgba(63, 81, 181, 0.1);
+        color: #3f51b5;
+    }
+}
+
+.content {
+    padding: 24px;
+    background: #fafafa;
+    min-height: 100%;
+}

@@ -1,0 +1,261 @@
+<!-- src/app/features/video-detail-dialog/video-detail-dialog.component.html -->
+
+<div class="detail-dialog">
+    <h2 mat-dialog-title>
+        <mat-icon>assessment</mat-icon>
+        Video Analysis Results
+    </h2>
+
+    <mat-dialog-content>
+        @if (isLoading()) {
+        <div class="loading-container">
+            <mat-spinner diameter="40"></mat-spinner>
+            <p>Loading results...</p>
+        </div>
+        } @else if (status() || details()) {
+        <!-- Header Info -->
+        <div class="video-header">
+            <div class="video-info">
+                <h3>{{ details()?.fileName || status()?.fileName }}</h3>
+                <mat-chip [class]="getStateClass(details()?.state || status()?.state)">
+                    <mat-icon>{{ getStateIcon(details()?.state || status()?.state) }}</mat-icon>
+                    {{ getStateLabel(details()?.state || status()?.state) }}
+                </mat-chip>
+
+                @if (details()?.videoFileExists) {
+                <button mat-stroked-button color="primary" (click)="playVideo()">
+                    <mat-icon>play_arrow</mat-icon>
+                    Play Video
+                </button>
+                }
+            </div>
+
+            @if (status()?.state === VideoProcessingState.Processing) {
+            <div class="progress-section">
+                <div class="progress-header">
+                    <span>Processing Progress</span>
+                    <span>{{ status()?.progressPercent }}%</span>
+                </div>
+                <mat-progress-bar mode="determinate" [value]="status()?.progressPercent"></mat-progress-bar>
+                <p class="progress-detail">
+                    {{ status()?.processedFrames }} frames processed
+                </p>
+            </div>
+            }
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <!-- Tabs -->
+        <mat-tab-group class="detail-tabs">
+            <!-- Overview Tab -->
+            <mat-tab label="Overview">
+                <div class="tab-content">
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <mat-icon>videocam</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">{{ formatDuration(details()?.videoDurationSeconds || 0) ||
+                                    summary()?.videoDuration || '--' }}</span>
+                                <span class="label">Duration</span>
+                            </div>
+                        </div>
+
+                        <div class="stat-box">
+                            <mat-icon>photo_library</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">{{ details()?.processedFrames || summary()?.totalFramesProcessed ||
+                                    status()?.processedFrames || 0 }}</span>
+                                <span class="label">Frames Processed</span>
+                            </div>
+                        </div>
+
+                        <div class="stat-box">
+                            <mat-icon>person_search</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">{{ details()?.totalDetections || summary()?.totalPersonsDetected ||
+                                    status()?.totalPersonsDetected || 0 }}</span>
+                                <span class="label">Total Detections</span>
+                            </div>
+                        </div>
+
+                        <div class="stat-box highlight">
+                            <mat-icon>fingerprint</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">{{ details()?.uniquePersonCount ||
+                                    summary()?.uniquePersonsIdentified || status()?.uniquePersonsDetected || 0 }}</span>
+                                <span class="label">Unique Persons</span>
+                            </div>
+                        </div>
+
+                        <!-- In the stats-grid section -->
+                        <div class="stat-box">
+                            <mat-icon>trending_up</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">
+                                    {{ (details()?.averagePersonsPerFrame ??
+                                    summary()?.averagePersonsPerFrame)?.toFixed(1) || '--' }}
+                                </span>
+                                <span class="label">Avg per Frame</span>
+                            </div>
+                        </div>
+
+                        <div class="stat-box">
+                            <mat-icon>groups</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">
+                                    {{ details()?.peakPersonCount ?? summary()?.peakPersonCount ?? '--' }}
+                                </span>
+                                <span class="label">Peak Count</span>
+                            </div>
+                        </div>
+
+                        <div class="stat-box">
+                            <mat-icon>timer</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">{{ formatProcessingTime(details()?.processingTimeSeconds ||
+                                    summary()?.processingTimeSeconds) }}</span>
+                                <span class="label">Processing Time</span>
+                            </div>
+                        </div>
+
+                        <div class="stat-box">
+                            <mat-icon>schedule</mat-icon>
+                            <div class="stat-info">
+                                <span class="value">{{ (details()?.startedAt || status()?.startedAt) | date:'short'
+                                    }}</span>
+                                <span class="label">Started</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </mat-tab>
+
+            <!-- Person Timeline Tab -->
+            <mat-tab label="Person Timeline">
+                <div class="tab-content">
+                    @if ((details()?.personTimelines?.length || 0) > 0 || (summary()?.personTimelines?.length || 0) > 0)
+                    {
+                    <div class="timeline-list">
+                        @for (person of (details()?.personTimelines || summary()?.personTimelines || []); track
+                        person.globalPersonId) {
+                        <div class="timeline-item">
+                            <!-- Person Thumbnail -->
+                            <div class="person-avatar-container">
+                                @if (person.hasThumbnail) {
+                                <img [src]="getPersonThumbnailUrl(person.globalPersonId)" class="person-thumbnail"
+                                    alt="Person {{ person.shortId }}" (error)="$event.target.style.display='none'">
+                                }
+                                <div class="person-avatar" [style.background-color]="getPersonColor(person.shortId)">
+                                    {{ person.shortId }}
+                                </div>
+                            </div>
+
+                            <div class="person-info">
+                                <div class="person-header">
+                                    <span class="person-id">Person {{ person.shortId }}</span>
+                                    <mat-chip size="small">
+                                        {{ person.totalAppearances }} appearances
+                                    </mat-chip>
+                                </div>
+
+                                <div class="timeline-bar-container">
+                                    <div class="timeline-bar"
+                                        [style.left.%]="getTimelinePosition(person.firstAppearanceSeconds)"
+                                        [style.width.%]="getTimelineWidth(person.firstAppearanceSeconds, person.lastAppearanceSeconds)"
+                                        [style.background-color]="getPersonColor(person.shortId)">
+                                    </div>
+                                </div>
+
+                                <div class="person-details">
+                                    <span>
+                                        <mat-icon>play_arrow</mat-icon>
+                                        {{ formatTime(person.firstAppearanceSeconds) }}
+                                    </span>
+                                    <span>
+                                        <mat-icon>stop</mat-icon>
+                                        {{ formatTime(person.lastAppearanceSeconds) }}
+                                    </span>
+                                    <span>
+                                        <mat-icon>verified</mat-icon>
+                                        {{ (person.averageConfidence * 100).toFixed(0) }}% confidence
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        }
+                    </div>
+                    } @else {
+                    <div class="empty-tab">
+                        <mat-icon>timeline</mat-icon>
+                        <p>Timeline data will be available after processing completes</p>
+                    </div>
+                    }
+                </div>
+            </mat-tab>
+
+            <!-- Detections Tab (only for in-memory status) -->
+            @if (status()?.detections?.length) {
+            <mat-tab label="Frame Detections">
+                <div class="tab-content">
+                    <div class="detections-list">
+                        @for (detection of status()?.detections?.slice(0, 50); track detection.frameNumber) {
+                        <div class="detection-item" [class.has-persons]="detection.personCount > 0">
+                            <div class="frame-info">
+                                <span class="frame-number">Frame {{ detection.frameNumber }}</span>
+                                <span class="timestamp">{{ formatTime(detection.timestampSeconds) }}</span>
+                            </div>
+
+                            <div class="detection-count" [class.active]="detection.personCount > 0">
+                                <mat-icon>person</mat-icon>
+                                <span>{{ detection.personCount }}</span>
+                            </div>
+
+                            @if (detection.persons?.length) {
+                            <div class="persons-preview">
+                                @for (person of detection.persons.slice(0, 3); track person.globalPersonId) {
+                                <mat-chip size="small"
+                                    [matTooltip]="'Confidence: ' + (person.confidence * 100).toFixed(0) + '%'">
+                                    {{ person.globalPersonId.substring(0, 6) }}
+                                </mat-chip>
+                                }
+                                @if (detection.persons.length > 3) {
+                                <span class="more">+{{ detection.persons.length - 3 }} more</span>
+                                }
+                            </div>
+                            }
+                        </div>
+                        }
+                    </div>
+
+                    @if ((status()?.detections?.length || 0) > 50) {
+                    <p class="showing-limited">Showing first 50 of {{ status()?.detections?.length }} detections</p>
+                    }
+                </div>
+            </mat-tab>
+            }
+        </mat-tab-group>
+        } @else {
+        <div class="error-state">
+            <mat-icon>error</mat-icon>
+            <p>Failed to load video details</p>
+        </div>
+        }
+    </mat-dialog-content>
+
+    <mat-dialog-actions align="end">
+        <button mat-button (click)="close()">Close</button>
+        @if (details()?.videoFileExists) {
+        <button mat-stroked-button color="primary" (click)="playVideo()">
+            <mat-icon>play_arrow</mat-icon>
+            Play Video
+        </button>
+        }
+        @if (summary() || details()) {
+        <button mat-raised-button color="primary" (click)="exportResults()">
+            <mat-icon>download</mat-icon>
+            Export Results
+        </button>
+        }
+    </mat-dialog-actions>
+</div>
