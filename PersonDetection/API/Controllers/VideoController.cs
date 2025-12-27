@@ -5,6 +5,7 @@
     using PersonDetection.Application.Commands;
     using PersonDetection.Application.DTOs;
     using PersonDetection.Application.Interfaces;
+    using PersonDetection.Application.IService;
     using PersonDetection.Application.Queries;
     using PersonDetection.Application.Services;
     using PersonDetection.Infrastructure.Context;
@@ -87,6 +88,12 @@
                 var command = new ProcessVideoCommand(jobId, filePath, file.FileName, frameSkip, extractFeatures);
                 var result = await _commandDispatcher.Dispatch(command, ct);
 
+                var notificationService = HttpContext.RequestServices.GetService<ISignalRNotificationService>();
+                if (notificationService != null)
+                {
+                    await notificationService.NotifyNewVideoJob(jobId, file.FileName);
+                }
+
                 return Ok(result);
             }
             catch (Exception ex)
@@ -154,20 +161,71 @@
         /// <summary>
         /// Delete a completed job and its data
         /// </summary>
+        /// <summary>
+        /// Delete a video job and its data (from both memory and database)
+        /// </summary>
         [HttpDelete("{jobId}")]
-        public ActionResult DeleteJob(Guid jobId)
+        public async Task<ActionResult> DeleteJob(Guid jobId, CancellationToken ct = default)
         {
+            // First check in-memory status
             var status = _videoService.GetStatus(jobId);
 
-            if (status == null)
+            if (status != null)
+            {
+                // Job exists in memory
+                if (status.State == VideoProcessingState.Processing)
+                    return BadRequest(new { error = "Cannot delete a job that is still processing. Cancel it first." });
+
+                _videoService.CleanupJob(jobId);
+            }
+
+            // Also try to delete from database
+            using var scope = HttpContext.RequestServices.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+            var videoJob = await context.VideoJobs
+                .Include(v => v.PersonTimelines)
+                .FirstOrDefaultAsync(v => v.JobId == jobId, ct);
+
+            if (videoJob == null && status == null)
+            {
                 return NotFound(new { error = "Job not found" });
+            }
 
-            if (status.State == VideoProcessingState.Processing)
-                return BadRequest(new { error = "Cannot delete a job that is still processing. Cancel it first." });
+            if (videoJob != null)
+            {
+                // Delete video file if exists
+                var filePath = videoJob.StoredFilePath ?? videoJob.OriginalFilePath;
+                if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                {
+                    try
+                    {
+                        System.IO.File.Delete(filePath);
+                        _logger.LogInformation("Deleted video file: {FilePath}", filePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete video file: {FilePath}", filePath);
+                    }
+                }
 
-            _videoService.CleanupJob(jobId);
+                // Delete detected persons
+                var detectedPersons = await context.DetectedPersons
+                    .Where(d => d.VideoJobId == videoJob.Id)
+                    .ToListAsync(ct);
+                context.DetectedPersons.RemoveRange(detectedPersons);
 
-            return Ok(new { message = "Job deleted", jobId });
+                // Delete person timelines
+                context.VideoPersonTimelines.RemoveRange(videoJob.PersonTimelines);
+
+                // Delete the video job
+                context.VideoJobs.Remove(videoJob);
+
+                await context.SaveChangesAsync(ct);
+                _logger.LogInformation("Deleted video job from database: {JobId}", jobId);
+            }
+
+            return Ok(new { message = "Job deleted successfully", jobId });
         }
 
         /// <summary>

@@ -1,6 +1,6 @@
 // src/app/features/video-player-dialog/video-player-dialog.component.ts
 
-import { Component, inject, OnInit, OnDestroy, signal } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy, signal, ViewChild, ElementRef, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
@@ -32,11 +32,14 @@ export class VideoPlayerDialogComponent implements OnInit, OnDestroy {
     private data = inject<VideoPlayerDialogData>(MAT_DIALOG_DATA);
     private sanitizer = inject(DomSanitizer);
 
+    @ViewChild('videoElement') videoElement!: ElementRef<HTMLVideoElement>;
+
     videoUrl: SafeUrl | null = null;
     fileName = signal('');
     isLoading = signal(true);
     hasError = signal(false);
     errorMessage = signal('');
+    isPortrait = signal(false);
 
     ngOnInit(): void {
         this.fileName.set(this.data.fileName);
@@ -49,6 +52,19 @@ export class VideoPlayerDialogComponent implements OnInit, OnDestroy {
 
     onVideoLoaded(): void {
         this.isLoading.set(false);
+
+        // Check if video is portrait or landscape
+        const video = this.videoElement?.nativeElement;
+        if (video) {
+            const isPortrait = video.videoHeight > video.videoWidth;
+            this.isPortrait.set(isPortrait);
+
+            // Update dialog size based on video dimensions
+            this.dialogRef.updateSize(
+                isPortrait ? '450px' : '900px',
+                'auto'
+            );
+        }
     }
 
     onVideoError(event: Event): void {

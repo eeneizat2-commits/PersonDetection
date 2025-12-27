@@ -7,10 +7,22 @@
     </h2>
 
     <mat-dialog-content>
+        <!-- Success State - Show only success message -->
+        @if (uploadResult()) {
+        <div class="result-section success">
+            <mat-icon>check_circle</mat-icon>
+            <div class="result-info">
+                <p class="result-title">Upload Successful!</p>
+                <p class="result-message">{{ uploadResult()?.message }}</p>
+                <span class="job-id">Job ID: {{ uploadResult()?.jobId }}</span>
+            </div>
+        </div>
+        } @else {
+
         <!-- Drop Zone -->
         <div class="drop-zone" [class.dragging]="isDragging()" [class.has-file]="selectedFile()"
-            (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)"
-            (click)="fileInput.click()">
+            [class.disabled]="isUploading()" (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)"
+            (drop)="onDrop($event)" (click)="!isUploading() && fileInput.click()">
 
             <input #fileInput type="file" accept="video/*,.mp4,.avi,.mov,.mkv,.webm,.wmv" hidden
                 (change)="onFileSelected($event)">
@@ -19,29 +31,31 @@
             <mat-icon class="upload-icon">cloud_upload</mat-icon>
             <p class="drop-text">Drag & drop video file here</p>
             <p class="drop-hint">or click to browse</p>
-            <p class="supported-formats">Supported: MP4, AVI, MOV, MKV, WebM, WMV (max 500MB)</p>
+            <span class="supported-formats">Supported: MP4, AVI, MOV, MKV, WebM, WMV (max 500MB)</span>
             } @else {
             <mat-icon class="file-icon">movie</mat-icon>
             <p class="file-name">{{ selectedFile()?.name }}</p>
             <p class="file-size">{{ formatFileSize(selectedFile()?.size || 0) }}</p>
+            @if (!isUploading()) {
             <button mat-button color="warn" (click)="clearFile($event)">
                 <mat-icon>close</mat-icon>
                 Remove
             </button>
             }
+            }
         </div>
 
-        <!-- Upload Progress -->
-        @if (uploadProgress()) {
+        <!-- Upload Progress - Only when uploading -->
+        @if (isUploading()) {
         <div class="progress-section">
             <div class="progress-header">
                 <span>{{ getProgressLabel() }}</span>
-                <span>{{ uploadProgress()?.progress }}%</span>
+                <span>{{ uploadProgress()?.progress || 0 }}%</span>
             </div>
             <mat-progress-bar [mode]="uploadProgress()?.state === 'processing' ? 'indeterminate' : 'determinate'"
-                [value]="uploadProgress()?.progress">
+                [value]="uploadProgress()?.progress || 0" color="primary">
             </mat-progress-bar>
-            @if (uploadProgress()?.state === 'uploading') {
+            @if (uploadProgress()?.state === 'uploading' && uploadProgress()?.total) {
             <p class="progress-detail">
                 {{ formatFileSize(uploadProgress()?.loaded || 0) }} / {{ formatFileSize(uploadProgress()?.total || 0) }}
             </p>
@@ -49,41 +63,40 @@
         </div>
         }
 
-        <!-- Options -->
+        <!-- Options - Only when not uploading -->
         @if (!isUploading()) {
         <div class="options-section">
             <h3>Processing Options</h3>
 
-            <div class="option-row">
-                <mat-form-field appearance="outline" class="frame-skip-field">
-                    <mat-label>Frame Skip</mat-label>
-                    <input matInput type="number" [(ngModel)]="frameSkip" min="1" max="30">
-                    <mat-hint>Process every Nth frame (higher = faster)</mat-hint>
-                </mat-form-field>
-
-                <mat-icon matTooltip="Process every Nth frame. Higher values process faster but may miss detections."
-                    class="help-icon">
-                    help_outline
-                </mat-icon>
-            </div>
-
-            <mat-checkbox [(ngModel)]="extractFeatures" color="primary">
-                <div class="checkbox-content">
-                    <span>Enable Person Re-identification</span>
-                    <small>Track unique persons across frames (slower but more accurate)</small>
+            <div class="options-grid">
+                <div class="option-item">
+                    <div class="option-label">
+                        <span>Frame Skip</span>
+                        <button mat-icon-button class="info-button"
+                            matTooltip="Process every Nth frame. Higher values mean faster processing but may miss some detections."
+                            matTooltipPosition="above" matTooltipClass="custom-tooltip">
+                            <mat-icon>help_outline</mat-icon>
+                        </button>
+                    </div>
+                    <div class="option-control">
+                        <button mat-icon-button (click)="decrementFrameSkip()" [disabled]="frameSkip <= 1">
+                            <mat-icon>remove</mat-icon>
+                        </button>
+                        <span class="frame-skip-value">{{ frameSkip }}</span>
+                        <button mat-icon-button (click)="incrementFrameSkip()" [disabled]="frameSkip >= 30">
+                            <mat-icon>add</mat-icon>
+                        </button>
+                    </div>
+                    <span class="option-hint">Process every {{ frameSkip }}{{ getOrdinalSuffix(frameSkip) }}
+                        frame</span>
                 </div>
-            </mat-checkbox>
-        </div>
-        }
 
-        <!-- Result -->
-        @if (uploadResult()) {
-        <div class="result-section success">
-            <mat-icon>check_circle</mat-icon>
-            <div class="result-info">
-                <p class="result-title">Upload Successful!</p>
-                <p class="result-message">{{ uploadResult()?.message }}</p>
-                <p class="job-id">Job ID: {{ uploadResult()?.jobId }}</p>
+                <div class="option-item checkbox-item">
+                    <mat-checkbox [(ngModel)]="extractFeatures" color="primary">
+                        Person Re-identification
+                    </mat-checkbox>
+                    <span class="option-hint">Track unique persons across frames (slower but more accurate)</span>
+                </div>
             </div>
         </div>
         }
@@ -98,27 +111,37 @@
             </div>
         </div>
         }
+
+        }
     </mat-dialog-content>
 
-    <mat-dialog-actions align="end">
-        <button mat-button mat-dialog-close [disabled]="isUploading()">
-            {{ uploadResult() ? 'Close' : 'Cancel' }}
+    <mat-dialog-actions>
+        @if (uploadResult()) {
+        <!-- Success state actions -->
+        <button mat-button mat-dialog-close>
+            Close
         </button>
-
-        @if (!uploadResult()) {
-        <button mat-raised-button color="primary" [disabled]="!selectedFile() || isUploading()" (click)="upload()">
-            @if (isUploading()) {
-            <mat-icon class="spin">sync</mat-icon>
-            Uploading...
-            } @else {
-            <mat-icon>cloud_upload</mat-icon>
-            Upload & Process
-            }
-        </button>
-        } @else {
         <button mat-raised-button color="primary" (click)="viewJob()">
             <mat-icon>visibility</mat-icon>
             View Progress
+        </button>
+        } @else {
+        <!-- Upload state actions -->
+        <button mat-button mat-dialog-close [disabled]="isUploading()">
+            Cancel
+        </button>
+        <button mat-raised-button color="primary" [disabled]="!selectedFile() || isUploading()" (click)="upload()">
+            @if (isUploading()) {
+            <ng-container>
+                <mat-icon class="spin">sync</mat-icon>
+                Uploading...
+            </ng-container>
+            } @else {
+            <ng-container>
+                <mat-icon>cloud_upload</mat-icon>
+                Upload & Process
+            </ng-container>
+            }
         </button>
         }
     </mat-dialog-actions>

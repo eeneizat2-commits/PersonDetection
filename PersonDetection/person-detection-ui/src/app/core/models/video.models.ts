@@ -154,3 +154,30 @@ export interface VideoPersonTimelineItem {
     hasThumbnail: boolean;
     thumbnailUrl: string | null;
 }
+
+export interface UploadProgress {
+    progress: number;
+    loaded: number;
+    total: number;
+    state: 'uploading' | 'processing' | 'done' | 'error';
+}
+export interface DialogData {
+    jobId: string;
+    fromHistory?: boolean;
+}
+
+export interface PersonTimelineDisplay {
+    globalPersonId: string;
+    shortId: string;
+    firstAppearanceSeconds: number;
+    lastAppearanceSeconds: number;
+    totalAppearances: number;
+    averageConfidence: number;
+}
+
+export interface NewVideoJobUpdate {
+    jobId: string;
+    fileName: string;
+    state: string;
+    createdAt: Date;
+}

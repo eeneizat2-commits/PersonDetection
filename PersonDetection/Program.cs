@@ -12,6 +12,7 @@ using PersonDetection.Application.Common;
 using PersonDetection.Application.Configuration;
 using PersonDetection.Application.DTOs;
 using PersonDetection.Application.Interfaces;
+using PersonDetection.Application.IService;
 using PersonDetection.Application.Queries;
 using PersonDetection.Application.Services;
 using PersonDetection.Domain.Repositories;
@@ -119,7 +120,7 @@ builder.Services.AddScoped<ICameraConfigRepository, CameraConfigRepository>();
 // ============================================
 builder.Services.AddScoped<ICommandDispatcher, CommandDispatcher>();
 builder.Services.AddScoped<IQueryDispatcher, QueryDispatcher>();
-
+builder.Services.AddScoped<ISignalRNotificationService, SignalRNotificationService>();
 // ============================================
 // COMMAND HANDLERS
 // ============================================

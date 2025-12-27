@@ -8,16 +8,21 @@
 ================================================= */
 :root {
   /* Brand */
-  --primary: #1976d2;        /* Blue */
+  --primary: #1976d2;
+  /* Blue */
   --primary-contrast: #ffffff;
 
-  --secondary: #26a69a;      /* Teal */
+  --secondary: #26a69a;
+  /* Teal */
   --secondary-contrast: #ffffff;
 
   /* Layout */
-  --background: #f4f6f8;     /* Page background */
-  --surface: #ffffff;        /* Cards / panels */
-  --sidebar: #1e293b;        /* Sidebar dark */
+  --background: #f4f6f8;
+  /* Page background */
+  --surface: #ffffff;
+  /* Cards / panels */
+  --sidebar: #1e293b;
+  /* Sidebar dark */
   --sidebar-text: #e5e7eb;
 
   /* Text */
@@ -125,4 +130,170 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+/* =================================================
+   DIALOG GLOBAL STYLES - No Scrollbars
+================================================= */
+
+/* Hide all scrollbars in dialogs */
+.mat-mdc-dialog-container {
+  .mdc-dialog__surface {
+    overflow: hidden !important;
+  }
+}
+
+.mat-mdc-dialog-content {
+  overflow: visible !important;
+  max-height: none !important;
+}
+
+/* Custom dialog panel classes */
+.cdk-overlay-pane {
+
+  &.video-upload-dialog,
+  &.video-player-dialog,
+  &.video-detail-dialog {
+    .mat-mdc-dialog-container {
+      border-radius: 16px;
+      overflow: hidden;
+    }
+  }
+}
+
+/* Remove scrollbar globally but keep functionality where needed */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Dialog backdrop */
+.cdk-overlay-dark-backdrop {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+// Add to src/styles.scss
+
+/* =================================================
+   DIALOG PANEL CLASSES
+================================================= */
+
+// Video Player Dialog - Responsive
+.video-player-dialog-responsive {
+  .mat-mdc-dialog-container {
+    padding: 0 !important;
+    border-radius: 12px !important;
+    overflow: hidden !important;
+
+    .mdc-dialog__surface {
+      border-radius: 12px !important;
+      overflow: hidden !important;
+    }
+  }
+}
+
+// Video Detail Dialog - Wide
+.video-detail-dialog-panel {
+  .mat-mdc-dialog-container {
+    padding: 0 !important;
+    border-radius: 16px !important;
+    overflow: hidden !important;
+
+    .mdc-dialog__surface {
+      border-radius: 16px !important;
+    }
+  }
+
+  .mat-mdc-dialog-content {
+    max-height: calc(95vh - 180px) !important;
+  }
+}
+
+// Upload Dialog
+.upload-dialog-panel {
+  .mat-mdc-dialog-container {
+    padding: 0 !important;
+    border-radius: 16px !important;
+    overflow: hidden !important;
+
+    .mdc-dialog__surface {
+      border-radius: 16px !important;
+    }
+  }
+}
+
+// Dialog Backdrop - Blur effect
+.cdk-overlay-dark-backdrop {
+  background: rgba(15, 23, 42, 0.5) !important;
+  backdrop-filter: blur(4px);
+}
+
+// Ensure dialogs don't overflow screen
+.cdk-overlay-pane {
+  max-width: 95vw !important;
+  max-height: 95vh !important;
+}
+
+// Add to src/styles.scss
+
+/* =================================================
+   CUSTOM TOOLTIP STYLES
+================================================= */
+.custom-tooltip {
+  font-size: 0.8rem !important;
+  line-height: 1.4 !important;
+  padding: 8px 12px !important;
+  max-width: 220px !important;
+  background: #e2e8f0 !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+.matMenu {
+  font-size: 0.8rem !important;
+  line-height: 1.4 !important;
+  padding: 8px 12px !important;
+  max-width: 220px !important;
+  background: #0c4999 !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* =================================================
+   SWEETALERT2 CUSTOM STYLES
+================================================= */
+.swal2-popup {
+  border-radius: 16px !important;
+  padding: 24px !important;
+}
+
+.swal2-title {
+  font-size: 1.25rem !important;
+  font-weight: 600 !important;
+  color: #1e293b !important;
+}
+
+.swal2-html-container {
+  color: #475569 !important;
+}
+
+.swal2-confirm {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  padding: 10px 24px !important;
+}
+
+.swal2-cancel {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  padding: 10px 24px !important;
+}
+
+.swal2-icon {
+  margin: 0 auto 16px !important;
 }

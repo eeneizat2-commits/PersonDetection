@@ -6,7 +6,8 @@ import { BehaviorSubject, Subject } from 'rxjs';
 import * as signalR from '@microsoft/signalr';
 import { environment } from '../../environments/environment';
 import { DetectionUpdate } from '../core/models/detection.models';
-import { VideoProgressUpdate, VideoCompleteUpdate } from '../core/models/video.models';
+import { VideoProgressUpdate, VideoCompleteUpdate, NewVideoJobUpdate } from '../core/models/video.models';
+
 
 @Injectable({
     providedIn: 'root'
@@ -27,6 +28,10 @@ export class SignalRService {
 
     private videoCompleteSubject = new Subject<VideoCompleteUpdate>();
     videoComplete$ = this.videoCompleteSubject.asObservable();
+
+    // 🆕 New video job created
+    private newVideoJobSubject = new Subject<NewVideoJobUpdate>();
+    newVideoJob$ = this.newVideoJobSubject.asObservable();
 
     private subscribedCameras = new Set<number>();
     private subscribedVideoJobs = new Set<string>();
@@ -72,6 +77,12 @@ export class SignalRService {
             this.videoCompleteSubject.next(data);
         });
 
+        // 🆕 New video job created
+        this.hubConnection.on('NewVideoJobCreated', (data: NewVideoJobUpdate) => {
+            console.log('New video job created:', data);
+            this.newVideoJobSubject.next(data);
+        });
+
         this.hubConnection.onreconnecting((error) => {
             console.log('SignalR reconnecting...', error);
             this.connectionStatusSubject.next(false);
@@ -80,7 +91,6 @@ export class SignalRService {
         this.hubConnection.onreconnected((connectionId) => {
             console.log('SignalR reconnected:', connectionId);
             this.connectionStatusSubject.next(true);
-            // Re-subscribe to cameras and video jobs
             this.subscribedCameras.forEach(id => this.subscribeToCamera(id));
             this.subscribedVideoJobs.forEach(id => this.subscribeToVideoJob(id));
         });
@@ -103,7 +113,6 @@ export class SignalRService {
 
     async subscribeToCamera(cameraId: number): Promise<void> {
         if (!this.isBrowser) return;
-
         if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
             try {
                 await this.hubConnection.invoke('SubscribeToCamera', cameraId);
@@ -117,7 +126,6 @@ export class SignalRService {
 
     async unsubscribeFromCamera(cameraId: number): Promise<void> {
         if (!this.isBrowser) return;
-
         if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
             try {
                 await this.hubConnection.invoke('UnsubscribeFromCamera', cameraId);
@@ -131,7 +139,6 @@ export class SignalRService {
 
     async subscribeToVideoJob(jobId: string): Promise<void> {
         if (!this.isBrowser) return;
-
         if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
             try {
                 await this.hubConnection.invoke('SubscribeToVideoJob', jobId);
@@ -145,7 +152,6 @@ export class SignalRService {
 
     async unsubscribeFromVideoJob(jobId: string): Promise<void> {
         if (!this.isBrowser) return;
-
         if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
             try {
                 await this.hubConnection.invoke('UnsubscribeFromVideoJob', jobId);
@@ -159,7 +165,6 @@ export class SignalRService {
 
     async getGlobalStatus(): Promise<any> {
         if (!this.isBrowser) return null;
-
         if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
             return await this.hubConnection.invoke('GetGlobalStatus');
         }

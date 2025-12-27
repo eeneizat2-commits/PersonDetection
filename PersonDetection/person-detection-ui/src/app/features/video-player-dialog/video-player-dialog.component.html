@@ -1,12 +1,12 @@
 <!-- src/app/features/video-player-dialog/video-player-dialog.component.html -->
 
-<div class="video-player-dialog">
+<div class="video-player-dialog" [class.portrait]="isPortrait()">
     <div class="dialog-header">
         <h2>
-            <mat-icon>movie</mat-icon>
-            {{ fileName() }}
+            <mat-icon>play_circle</mat-icon>
+            <span>{{ fileName() }}</span>
         </h2>
-        <button mat-icon-button (click)="close()">
+        <button mat-icon-button (click)="close()" aria-label="Close">
             <mat-icon>close</mat-icon>
         </button>
     </div>
@@ -14,7 +14,7 @@
     <div class="video-container">
         @if (isLoading()) {
         <div class="loading-overlay">
-            <mat-spinner diameter="48"></mat-spinner>
+            <mat-spinner diameter="44"></mat-spinner>
             <p>Loading video...</p>
         </div>
         }
@@ -23,12 +23,13 @@
         <div class="error-overlay">
             <mat-icon>error_outline</mat-icon>
             <p>{{ errorMessage() }}</p>
-            <button mat-raised-button color="primary" (click)="close()">Close</button>
+            <button mat-raised-button (click)="close()">Close</button>
         </div>
         }
 
         @if (!hasError() && videoUrl) {
-        <video controls autoplay [src]="videoUrl" (loadeddata)="onVideoLoaded()" (error)="onVideoError($event)">
+        <video #videoElement controls autoplay [src]="videoUrl" (loadedmetadata)="onVideoLoaded()"
+            (error)="onVideoError($event)" playsinline>
             Your browser does not support the video tag.
         </video>
         }
@@ -39,7 +40,7 @@
             <mat-icon>close</mat-icon>
             Close
         </button>
-        <button mat-raised-button color="primary" (click)="downloadVideo()">
+        <button mat-raised-button (click)="downloadVideo()">
             <mat-icon>download</mat-icon>
             Download
         </button>

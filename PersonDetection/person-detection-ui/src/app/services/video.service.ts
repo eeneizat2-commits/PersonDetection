@@ -2,7 +2,7 @@
 
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpEvent, HttpEventType, HttpRequest } from '@angular/common/http';
-import { Observable, BehaviorSubject, Subject, map, tap, catchError } from 'rxjs';
+import { Observable, BehaviorSubject, Subject, map, tap, catchError, filter } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
     VideoUploadResult,
@@ -12,15 +12,11 @@ import {
     VideoCompleteUpdate,
     VideoProcessingState,
     VideoHistoryResponse,
-    VideoDetailsResponse
+    VideoDetailsResponse,
+    UploadProgress
 } from '../core/models/video.models';
 
-export interface UploadProgress {
-    progress: number;
-    loaded: number;
-    total: number;
-    state: 'uploading' | 'processing' | 'done' | 'error';
-}
+
 
 @Injectable({ providedIn: 'root' })
 export class VideoService {
@@ -47,7 +43,7 @@ export class VideoService {
      */
     uploadVideo(
         file: File,
-        frameSkip: number = 5,
+        frameSkip: number,
         extractFeatures: boolean = true
     ): Observable<VideoUploadResult | UploadProgress> {
         const formData = new FormData();
@@ -65,41 +61,49 @@ export class VideoService {
         );
 
         return this.http.request<VideoUploadResult>(req).pipe(
+            // IMPORTANT: Filter to only handle UploadProgress and Response events
+            filter((event: HttpEvent<VideoUploadResult>) => {
+                return event.type === HttpEventType.UploadProgress ||
+                    event.type === HttpEventType.Response;
+            }),
             map((event: HttpEvent<VideoUploadResult>) => {
-                switch (event.type) {
-                    case HttpEventType.UploadProgress:
-                        const progress: UploadProgress = {
-                            progress: event.total ? Math.round((100 * event.loaded) / event.total) : 0,
-                            loaded: event.loaded,
-                            total: event.total || 0,
-                            state: 'uploading'
-                        };
-                        this.updateUploadProgress(uploadId, progress);
-                        return progress;
-
-                    case HttpEventType.Response:
-                        const result = event.body as VideoUploadResult;
-                        this.updateUploadProgress(uploadId, {
-                            progress: 100,
-                            loaded: file.size,
-                            total: file.size,
-                            state: 'processing'
-                        });
-
-                        if (result?.jobId) {
-                            this.startStatusPolling(result.jobId);
-                        }
-
-                        return result;
-
-                    default:
-                        return {
-                            progress: 0,
-                            loaded: 0,
-                            total: file.size,
-                            state: 'uploading' as const
-                        };
+                if (event.type === HttpEventType.UploadProgress) {
+                    const progress: UploadProgress = {
+                        progress: event.total ? Math.round((100 * event.loaded) / event.total) : 0,
+                        loaded: event.loaded,
+                        total: event.total || file.size,
+                        state: 'uploading'
+                    };
+                    this.updateUploadProgress(uploadId, progress);
+                    return progress;
                 }
+
+                // HttpEventType.Response
+                if (event.type === HttpEventType.Response) {
+                    const result = event.body as VideoUploadResult;
+
+                    // Update progress to complete
+                    this.updateUploadProgress(uploadId, {
+                        progress: 100,
+                        loaded: file.size,
+                        total: file.size,
+                        state: 'done'
+                    });
+
+                    if (result?.jobId) {
+                        this.startStatusPolling(result.jobId);
+                    }
+
+                    return result;
+                }
+
+                // This should never be reached due to filter, but TypeScript needs it
+                return {
+                    progress: 0,
+                    loaded: 0,
+                    total: file.size,
+                    state: 'uploading' as const
+                };
             }),
             catchError(error => {
                 this.updateUploadProgress(uploadId, {

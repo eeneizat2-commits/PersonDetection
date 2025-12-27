@@ -13,6 +13,7 @@
             <p>Loading results...</p>
         </div>
         } @else if (status() || details()) {
+
         <!-- Header Info -->
         <div class="video-header">
             <div class="video-info">
@@ -30,16 +31,23 @@
                 }
             </div>
 
+            <!-- Processing Progress - Real-time -->
             @if (status()?.state === VideoProcessingState.Processing) {
             <div class="progress-section">
                 <div class="progress-header">
-                    <span>Processing Progress</span>
-                    <span>{{ status()?.progressPercent }}%</span>
+                    <span class="progress-title">
+                        <mat-icon class="spin">sync</mat-icon>
+                        Processing...
+                    </span>
+                    <span class="progress-percent">{{ currentProgress() }}%</span>
                 </div>
-                <mat-progress-bar mode="determinate" [value]="status()?.progressPercent"></mat-progress-bar>
-                <p class="progress-detail">
-                    {{ status()?.processedFrames }} frames processed
-                </p>
+                <mat-progress-bar mode="determinate" [value]="currentProgress()" color="primary">
+                </mat-progress-bar>
+                <div class="progress-details">
+                    <span>{{ currentFrames() }} / {{ totalFrames() || '?' }} frames</span>
+                    <span>{{ currentDetections() }} detections</span>
+                    <span>{{ currentUniquePersons() }} unique</span>
+                </div>
             </div>
             }
         </div>
@@ -52,79 +60,91 @@
             <mat-tab label="Overview">
                 <div class="tab-content">
                     <div class="stats-grid">
-                        <div class="stat-box">
-                            <mat-icon>videocam</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">{{ formatDuration(details()?.videoDurationSeconds || 0) ||
+                        <div class="stat-card">
+                            <div class="stat-icon duration">
+                                <mat-icon>videocam</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ formatDuration(details()?.videoDurationSeconds || 0) ||
                                     summary()?.videoDuration || '--' }}</span>
-                                <span class="label">Duration</span>
+                                <span class="stat-label">Duration</span>
                             </div>
                         </div>
 
-                        <div class="stat-box">
-                            <mat-icon>photo_library</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">{{ details()?.processedFrames || summary()?.totalFramesProcessed ||
-                                    status()?.processedFrames || 0 }}</span>
-                                <span class="label">Frames Processed</span>
+                        <div class="stat-card">
+                            <div class="stat-icon frames">
+                                <mat-icon>photo_library</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ details()?.processedFrames ||
+                                    summary()?.totalFramesProcessed || currentFrames() || 0 }}</span>
+                                <span class="stat-label">Frames Processed</span>
                             </div>
                         </div>
 
-                        <div class="stat-box">
-                            <mat-icon>person_search</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">{{ details()?.totalDetections || summary()?.totalPersonsDetected ||
-                                    status()?.totalPersonsDetected || 0 }}</span>
-                                <span class="label">Total Detections</span>
+                        <div class="stat-card">
+                            <div class="stat-icon detections">
+                                <mat-icon>person_search</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ details()?.totalDetections ||
+                                    summary()?.totalPersonsDetected || currentDetections() || 0 }}</span>
+                                <span class="stat-label">Total Detections</span>
                             </div>
                         </div>
 
-                        <div class="stat-box highlight">
-                            <mat-icon>fingerprint</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">{{ details()?.uniquePersonCount ||
-                                    summary()?.uniquePersonsIdentified || status()?.uniquePersonsDetected || 0 }}</span>
-                                <span class="label">Unique Persons</span>
+                        <div class="stat-card highlight">
+                            <div class="stat-icon unique">
+                                <mat-icon>fingerprint</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ details()?.uniquePersonCount ||
+                                    summary()?.uniquePersonsIdentified || currentUniquePersons() || 0 }}</span>
+                                <span class="stat-label">Unique Persons</span>
                             </div>
                         </div>
 
-                        <!-- In the stats-grid section -->
-                        <div class="stat-box">
-                            <mat-icon>trending_up</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">
-                                    {{ (details()?.averagePersonsPerFrame ??
-                                    summary()?.averagePersonsPerFrame)?.toFixed(1) || '--' }}
-                                </span>
-                                <span class="label">Avg per Frame</span>
+                        <div class="stat-card">
+                            <div class="stat-icon avg">
+                                <mat-icon>trending_up</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ (details()?.averagePersonsPerFrame ??
+                                    summary()?.averagePersonsPerFrame)?.toFixed(1) || '--' }}</span>
+                                <span class="stat-label">Avg per Frame</span>
                             </div>
                         </div>
 
-                        <div class="stat-box">
-                            <mat-icon>groups</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">
-                                    {{ details()?.peakPersonCount ?? summary()?.peakPersonCount ?? '--' }}
-                                </span>
-                                <span class="label">Peak Count</span>
+                        <div class="stat-card">
+                            <div class="stat-icon peak">
+                                <mat-icon>groups</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ details()?.peakPersonCount ?? summary()?.peakPersonCount ??
+                                    '--' }}</span>
+                                <span class="stat-label">Peak Count</span>
                             </div>
                         </div>
 
-                        <div class="stat-box">
-                            <mat-icon>timer</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">{{ formatProcessingTime(details()?.processingTimeSeconds ||
+                        <div class="stat-card">
+                            <div class="stat-icon time">
+                                <mat-icon>timer</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ formatProcessingTime(details()?.processingTimeSeconds ||
                                     summary()?.processingTimeSeconds) }}</span>
-                                <span class="label">Processing Time</span>
+                                <span class="stat-label">Processing Time</span>
                             </div>
                         </div>
 
-                        <div class="stat-box">
-                            <mat-icon>schedule</mat-icon>
-                            <div class="stat-info">
-                                <span class="value">{{ (details()?.startedAt || status()?.startedAt) | date:'short'
+                        <div class="stat-card">
+                            <div class="stat-icon started">
+                                <mat-icon>schedule</mat-icon>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-value">{{ (details()?.startedAt || status()?.startedAt) | date:'short'
                                     }}</span>
-                                <span class="label">Started</span>
+                                <span class="stat-label">Started</span>
                             </div>
                         </div>
                     </div>
@@ -134,53 +154,32 @@
             <!-- Person Timeline Tab -->
             <mat-tab label="Person Timeline">
                 <div class="tab-content">
-                    @if ((details()?.personTimelines?.length || 0) > 0 || (summary()?.personTimelines?.length || 0) > 0)
-                    {
-                    <div class="timeline-list">
-                        @for (person of (details()?.personTimelines || summary()?.personTimelines || []); track
-                        person.globalPersonId) {
-                        <div class="timeline-item">
-                            <!-- Person Thumbnail -->
-                            <div class="person-avatar-container">
-                                @if (person.hasThumbnail) {
-                                <img [src]="getPersonThumbnailUrl(person.globalPersonId)" class="person-thumbnail"
-                                    alt="Person {{ person.shortId }}" (error)="$event.target.style.display='none'">
-                                }
-                                <div class="person-avatar" [style.background-color]="getPersonColor(person.shortId)">
+                    @if (getPersonTimelines().length > 0) {
+                    <div class="person-timeline-grid">
+                        @for (person of getPersonTimelines(); track person.globalPersonId) {
+                        <div class="person-card">
+                            <div class="person-avatar-wrapper">
+                                <img [src]="getPersonThumbnailUrl(person.globalPersonId)" class="avatar-thumbnail"
+                                    alt="Person {{ person.shortId }}" (error)="onThumbnailError($event)"
+                                    (load)="onThumbnailLoad($event)">
+                                <div class="avatar-placeholder"
+                                    [style.background]="'linear-gradient(135deg, ' + getPersonColor(person.shortId) + ' 0%, ' + getPersonColorDark(person.shortId) + ' 100%)'">
                                     {{ person.shortId }}
                                 </div>
                             </div>
-
                             <div class="person-info">
-                                <div class="person-header">
-                                    <span class="person-id">Person {{ person.shortId }}</span>
-                                    <mat-chip size="small">
-                                        {{ person.totalAppearances }} appearances
-                                    </mat-chip>
-                                </div>
-
-                                <div class="timeline-bar-container">
+                                <span class="person-name">Person {{ person.shortId }}</span>
+                                <span class="person-stats">{{ person.totalAppearances }} appearances • {{
+                                    (person.averageConfidence * 100).toFixed(0) }}%</span>
+                                <div class="timeline-bar-wrapper">
                                     <div class="timeline-bar"
                                         [style.left.%]="getTimelinePosition(person.firstAppearanceSeconds)"
                                         [style.width.%]="getTimelineWidth(person.firstAppearanceSeconds, person.lastAppearanceSeconds)"
-                                        [style.background-color]="getPersonColor(person.shortId)">
+                                        [style.background]="'linear-gradient(90deg, ' + getPersonColor(person.shortId) + ', ' + getPersonColorDark(person.shortId) + ')'">
                                     </div>
                                 </div>
-
-                                <div class="person-details">
-                                    <span>
-                                        <mat-icon>play_arrow</mat-icon>
-                                        {{ formatTime(person.firstAppearanceSeconds) }}
-                                    </span>
-                                    <span>
-                                        <mat-icon>stop</mat-icon>
-                                        {{ formatTime(person.lastAppearanceSeconds) }}
-                                    </span>
-                                    <span>
-                                        <mat-icon>verified</mat-icon>
-                                        {{ (person.averageConfidence * 100).toFixed(0) }}% confidence
-                                    </span>
-                                </div>
+                                <span class="time-range">{{ formatTime(person.firstAppearanceSeconds) }} → {{
+                                    formatTime(person.lastAppearanceSeconds) }}</span>
                             </div>
                         </div>
                         }
@@ -194,7 +193,7 @@
                 </div>
             </mat-tab>
 
-            <!-- Detections Tab (only for in-memory status) -->
+            <!-- Detections Tab -->
             @if (status()?.detections?.length) {
             <mat-tab label="Frame Detections">
                 <div class="tab-content">
@@ -205,29 +204,13 @@
                                 <span class="frame-number">Frame {{ detection.frameNumber }}</span>
                                 <span class="timestamp">{{ formatTime(detection.timestampSeconds) }}</span>
                             </div>
-
                             <div class="detection-count" [class.active]="detection.personCount > 0">
                                 <mat-icon>person</mat-icon>
                                 <span>{{ detection.personCount }}</span>
                             </div>
-
-                            @if (detection.persons?.length) {
-                            <div class="persons-preview">
-                                @for (person of detection.persons.slice(0, 3); track person.globalPersonId) {
-                                <mat-chip size="small"
-                                    [matTooltip]="'Confidence: ' + (person.confidence * 100).toFixed(0) + '%'">
-                                    {{ person.globalPersonId.substring(0, 6) }}
-                                </mat-chip>
-                                }
-                                @if (detection.persons.length > 3) {
-                                <span class="more">+{{ detection.persons.length - 3 }} more</span>
-                                }
-                            </div>
-                            }
                         </div>
                         }
                     </div>
-
                     @if ((status()?.detections?.length || 0) > 50) {
                     <p class="showing-limited">Showing first 50 of {{ status()?.detections?.length }} detections</p>
                     }
@@ -235,6 +218,7 @@
             </mat-tab>
             }
         </mat-tab-group>
+
         } @else {
         <div class="error-state">
             <mat-icon>error</mat-icon>
