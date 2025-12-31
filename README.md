@@ -2,7 +2,7 @@
 A system for detecting and tracking people in videos using OpenCV and YOLO/ONNX models, with Angular frontend and C# Core API backend.
 
 #back-end structure 
-PersonDetection/
+```PersonDetection/
 │
 ├── API/                                      # Presentation Layer
 │   ├── Controllers/
@@ -105,8 +105,8 @@ PersonDetection/
 ├── PersonDetection.http                      # HTTP request tests
 ├── Program.cs                                # Application entry point
 └── WeatherForecast.cs                        # (Default template)
-
-
+```
+```
 #front-end structure (angular ts)
 person-detection-ui/
 │
@@ -198,3 +198,4 @@ person-detection-ui/
 ├── package.json                              # NPM dependencies
 ├── README.md                                 # Project documentation
 └── tsconfig.json                             # TypeScript configuration
+```
