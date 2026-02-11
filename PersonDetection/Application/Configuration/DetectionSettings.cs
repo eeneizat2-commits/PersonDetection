@@ -15,20 +15,25 @@ namespace PersonDetection.Application.Configuration
         public bool UseGpu { get; set; } = true;
     }
 
+    // In DetectionSettings.cs
     public class IdentitySettings
     {
         public const string SectionName = "IdentityConfig";
 
-        public float DistanceThreshold { get; set; } = 0.18f;        // Much stricter!
-        public float SimilarityThreshold { get; set; } = 0.85f;
-        public float MaxDistanceThreshold { get; set; } = 0.35f;     // Absolute max
-        public float MinSeparationRatio { get; set; } = 1.5f;        // NEW: Require separation
-        public int CacheExpirationMinutes { get; set; } = 30;
-        public bool UpdateVectorOnMatch { get; set; } = false;       // DISABLED!
-        public float VectorUpdateAlpha { get; set; } = 0.0f;         // Zero update
-        public int MinSamplesToStabilize { get; set; } = 999;        // Never stabilize
-        public bool UseAdaptiveThreshold { get; set; } = false;      // Disabled
-        public bool RequireMinimumSeparation { get; set; } = true;   // NEW
+        public float DistanceThreshold { get; set; } = 0.25f;
+        public float MinDistanceForNewIdentity { get; set; } = 0.08f;  // NEW: Min dist to create new
+        public float SimilarityThreshold { get; set; } = 0.80f;
+        public float MinSeparationRatio { get; set; } = 1.3f;         // Relaxed from 1.5
+        public int CacheExpirationMinutes { get; set; } = 5;          // Shorter expiration
+        public bool UpdateVectorOnMatch { get; set; } = false;
+        public bool UseAdaptiveThreshold { get; set; } = false;
+        public bool RequireMinimumSeparation { get; set; } = true;
+        public int MaxIdentitiesPerCamera { get; set; } = 50;         // NEW: Limit identities
+        public int MinCropWidth { get; set; } = 48;                   // NEW: Min size for ReID
+        public int MinCropHeight { get; set; } = 96;                  // NEW: Min size for ReID
+        public bool EnableIdentityConsolidation { get; set; } = true; // NEW: Merge similar
+        public float ConsolidationThreshold { get; set; } = 0.06f;    // NEW: Merge if closer than this
+        public int TemporalWindowSeconds { get; set; } = 30;          // NEW: Time window
     }
 
     public class TrackingSettings

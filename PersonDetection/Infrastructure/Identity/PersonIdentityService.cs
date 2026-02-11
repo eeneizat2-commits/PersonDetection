@@ -14,23 +14,23 @@ namespace PersonDetection.Infrastructure.Identity
     public class PersonIdentityService : IPersonIdentityMatcher
     {
         private readonly ConcurrentDictionary<Guid, PersonIdentity> _identities = new();
+        private readonly ConcurrentDictionary<int, HashSet<Guid>> _cameraIdentities = new(); // Per-camera tracking
         private readonly IServiceProvider _serviceProvider;
         private readonly IdentitySettings _settings;
         private readonly ILogger<PersonIdentityService> _logger;
-
-        // Store ORIGINAL feature vectors - NEVER update them
-        private readonly ConcurrentDictionary<Guid, float[]> _originalFeatures = new();
+        private DateTime _lastConsolidation = DateTime.UtcNow;
 
         private class PersonIdentity
         {
             public Guid GlobalPersonId { get; set; }
             public int DbId { get; set; }
-            public float[] OriginalFeatureVector { get; set; } = null!;  // NEVER changes
+            public float[] OriginalFeatureVector { get; set; } = null!;
             public DateTime LastSeen { get; set; }
             public DateTime FirstSeen { get; set; }
             public int CameraId { get; set; }
             public int MatchCount { get; set; } = 1;
             public BoundingBox? LastBoundingBox { get; set; }
+            public bool IsConfirmed { get; set; } = false;  // Only count confirmed identities
         }
 
         public PersonIdentityService(
@@ -42,10 +42,12 @@ namespace PersonDetection.Infrastructure.Identity
             _settings = settings;
             _logger = logger;
 
-            _logger.LogWarning("🚀 PersonIdentityService initialized with DistanceThreshold={Threshold}, RequireSeparation={Sep}",
-                _settings.DistanceThreshold, _settings.RequireMinimumSeparation);
-
-            Task.Run(LoadExistingIdentities);
+            _logger.LogWarning(
+                "🚀 PersonIdentityService: DistThresh={Dist}, MinNewDist={MinNew}, MaxPerCam={Max}, Consolidation={Con}",
+                _settings.DistanceThreshold,
+                _settings.MinDistanceForNewIdentity,
+                _settings.MaxIdentitiesPerCamera,
+                _settings.EnableIdentityConsolidation);
         }
 
         // Backward compatible constructor
@@ -57,50 +59,9 @@ namespace PersonDetection.Infrastructure.Identity
             : this(serviceProvider, new IdentitySettings
             {
                 DistanceThreshold = distanceThreshold,
-                UpdateVectorOnMatch = false  // ALWAYS false now
+                UpdateVectorOnMatch = false
             }, logger)
         {
-        }
-
-        private async Task LoadExistingIdentities()
-        {
-            try
-            {
-                using var scope = _serviceProvider.CreateScope();
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-
-                // Only load from CURRENT session (last 30 minutes)
-                var recentPersons = await context.UniquePersons
-                    .Where(p => p.IsActive && p.LastSeenAt >= DateTime.UtcNow.AddMinutes(-30))
-                    .ToListAsync();
-
-                foreach (var person in recentPersons)
-                {
-                    var features = person.GetFeatureArray();
-                    if (features != null && features.Length == 512)
-                    {
-                        var identity = new PersonIdentity
-                        {
-                            GlobalPersonId = person.GlobalPersonId,
-                            DbId = person.Id,
-                            OriginalFeatureVector = features,
-                            LastSeen = person.LastSeenAt,
-                            FirstSeen = person.FirstSeenAt,
-                            CameraId = person.LastSeenCameraId,
-                            MatchCount = person.TotalSightings
-                        };
-
-                        _identities[person.GlobalPersonId] = identity;
-                        _originalFeatures[person.GlobalPersonId] = features;
-                    }
-                }
-
-                _logger.LogInformation("✅ Loaded {Count} recent identities from database", _identities.Count);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ Failed to load existing identities");
-            }
         }
 
         public Guid GetOrCreateIdentity(FeatureVector vector)
@@ -115,25 +76,80 @@ namespace PersonDetection.Infrastructure.Identity
 
         public Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox)
         {
+            // Check if bounding box is too small for reliable ReID
+            if (boundingBox != null && !IsSufficientSizeForReId(boundingBox))
+            {
+                _logger.LogDebug("📏 Crop too small ({W}x{H}) - using spatial tracking only",
+                    boundingBox.Width, boundingBox.Height);
+                return Guid.Empty; // Signal to use spatial tracking
+            }
+
             // Validate feature vector
             if (!IsValidFeatureVector(vector))
             {
-                _logger.LogWarning("⚠️ Invalid feature vector - creating temp ID");
-                return Guid.NewGuid();
+                _logger.LogWarning("⚠️ Invalid feature vector");
+                return Guid.Empty;
             }
 
-            // Try to match with strict criteria
-            var matchResult = TryMatchStrict(vector, cameraId, boundingBox);
+            // Periodic consolidation
+            if (_settings.EnableIdentityConsolidation &&
+                (DateTime.UtcNow - _lastConsolidation).TotalSeconds > 10)
+            {
+                ConsolidateSimilarIdentities(cameraId);
+                _lastConsolidation = DateTime.UtcNow;
+            }
+
+            // Get active identities for this camera (time-windowed)
+            var activeIdentities = GetActiveIdentities(cameraId);
+
+            // Try to match
+            var matchResult = TryMatchStrict(vector, activeIdentities, cameraId, boundingBox);
 
             if (matchResult.IsMatch)
             {
-                // Update ONLY metadata, NEVER the feature vector
                 UpdateMetadataOnly(matchResult.PersonId, cameraId, boundingBox);
                 return matchResult.PersonId;
             }
 
-            // Create new identity with ORIGINAL features (never to be modified)
+            // Check if we should create new identity
+            if (matchResult.BestDistance < _settings.MinDistanceForNewIdentity)
+            {
+                // Distance is very small - probably same person, force match to closest
+                _logger.LogWarning("🔗 Distance {Dist:F4} < MinNew {Min:F4} - forcing match to {Id}",
+                    matchResult.BestDistance, _settings.MinDistanceForNewIdentity,
+                    matchResult.BestMatchId.ToString()[..8]);
+
+                UpdateMetadataOnly(matchResult.BestMatchId, cameraId, boundingBox);
+                return matchResult.BestMatchId;
+            }
+
+            // Check identity limit
+            if (!_cameraIdentities.TryGetValue(cameraId, out var camIds))
+            {
+                camIds = new HashSet<Guid>();
+                _cameraIdentities[cameraId] = camIds;
+            }
+
+            if (camIds.Count >= _settings.MaxIdentitiesPerCamera)
+            {
+                // Force match to closest identity
+                if (matchResult.BestMatchId != Guid.Empty)
+                {
+                    _logger.LogWarning("🚫 Max identities ({Max}) reached - forcing match to closest",
+                        _settings.MaxIdentitiesPerCamera);
+                    UpdateMetadataOnly(matchResult.BestMatchId, cameraId, boundingBox);
+                    return matchResult.BestMatchId;
+                }
+            }
+
+            // Create new identity
             return CreateNewIdentity(vector, cameraId, boundingBox);
+        }
+
+        private bool IsSufficientSizeForReId(BoundingBox box)
+        {
+            return box.Width >= _settings.MinCropWidth &&
+                   box.Height >= _settings.MinCropHeight;
         }
 
         private bool IsValidFeatureVector(FeatureVector vector)
@@ -146,103 +162,127 @@ namespace PersonDetection.Infrastructure.Identity
             if (values.Any(v => float.IsNaN(v) || float.IsInfinity(v)))
                 return false;
 
-            // Check for degenerate vectors (all same value)
-            var uniqueValues = values.Distinct().Count();
-            if (uniqueValues < 100)
+            // Check for degenerate vectors
+            var variance = CalculateVariance(values);
+            if (variance < 0.001f)
             {
-                _logger.LogWarning("⚠️ Degenerate feature vector with only {Count} unique values", uniqueValues);
+                _logger.LogWarning("⚠️ Low variance feature vector: {Var:F6}", variance);
                 return false;
             }
 
             return true;
         }
 
-        private (bool IsMatch, Guid PersonId, float Distance) TryMatchStrict(
+        private float CalculateVariance(float[] values)
+        {
+            var mean = values.Average();
+            return values.Select(v => (v - mean) * (v - mean)).Average();
+        }
+
+        private List<PersonIdentity> GetActiveIdentities(int cameraId)
+        {
+            var cutoff = DateTime.UtcNow.AddSeconds(-_settings.TemporalWindowSeconds);
+
+            // Get identities from this camera that were seen recently
+            return _identities.Values
+                .Where(i => i.CameraId == cameraId && i.LastSeen >= cutoff)
+                .OrderByDescending(i => i.LastSeen)
+                .Take(_settings.MaxIdentitiesPerCamera)
+                .ToList();
+        }
+
+        private (bool IsMatch, Guid PersonId, float BestDistance, Guid BestMatchId) TryMatchStrict(
             FeatureVector vector,
+            List<PersonIdentity> activeIdentities,
             int cameraId,
             BoundingBox? boundingBox)
         {
-            if (_identities.IsEmpty)
+            if (activeIdentities.Count == 0)
             {
-                _logger.LogDebug("🔍 No existing identities - will create new");
-                return (false, Guid.Empty, float.MaxValue);
+                _logger.LogDebug("🔍 No active identities for camera {Cam}", cameraId);
+                return (false, Guid.Empty, float.MaxValue, Guid.Empty);
             }
 
-            // Calculate distances to ALL identities
-            var distances = new List<(Guid id, float distance)>();
-
-            foreach (var (id, identity) in _identities)
-            {
-                // Use ORIGINAL features only
-                var storedVector = new FeatureVector(identity.OriginalFeatureVector);
-                var distance = vector.EuclideanDistance(storedVector);
-                distances.Add((id, distance));
-            }
-
-            // Sort by distance
-            distances = distances.OrderBy(d => d.distance).ToList();
+            // Calculate distances
+            var distances = activeIdentities
+                .Select(identity => {
+                    var storedVector = new FeatureVector(identity.OriginalFeatureVector);
+                    var distance = vector.EuclideanDistance(storedVector);
+                    return (identity.GlobalPersonId, distance, identity);
+                })
+                .OrderBy(d => d.distance)
+                .ToList();
 
             var best = distances[0];
-            var secondBest = distances.Count > 1 ? distances[1] : (id: Guid.Empty, distance: float.MaxValue);
+            var secondBest = distances.Count > 1
+                ? distances[1]
+                : (GlobalPersonId: Guid.Empty, distance: float.MaxValue, identity: (PersonIdentity?)null);
 
-
+            // Log top matches
             _logger.LogInformation(
-                "🔍 Distances: Best={BestId}:{BestDist:F4}, Second={SecondId}:{SecondDist:F4}, Threshold={Thresh:F4}",
-                best.id.ToString()[..8],
+                "🔍 Camera {Cam}: Best={BestId}:{BestDist:F4}, Second={SecondDist:F4}, Active={Count}",
+                cameraId,
+                best.GlobalPersonId.ToString()[..8],
                 best.distance,
-                secondBest.id != Guid.Empty ? secondBest.id.ToString()[..8] : "none",
                 secondBest.distance,
-                _settings.DistanceThreshold);
+                activeIdentities.Count);
 
-            // Rule 1: Best distance must be below threshold
+            // Rule 1: Must be below threshold
             if (best.distance > _settings.DistanceThreshold)
             {
-                _logger.LogInformation("❌ NO MATCH: Best distance {Dist:F4} > threshold {Thresh:F4}",
+                _logger.LogInformation("❌ NO MATCH: {Dist:F4} > threshold {Thresh:F4}",
                     best.distance, _settings.DistanceThreshold);
-                return (false, Guid.Empty, best.distance);
+                return (false, Guid.Empty, best.distance, best.GlobalPersonId);
             }
 
-            // Rule 2: CRITICAL - Require minimum separation from second best
-            if (_settings.RequireMinimumSeparation && secondBest.id != Guid.Empty)
+            // Rule 2: Check separation (only if second best exists and is close)
+            if (_settings.RequireMinimumSeparation &&
+                secondBest.GlobalPersonId != Guid.Empty &&
+                secondBest.distance < _settings.DistanceThreshold)
             {
-                var separationRatio = secondBest.distance / Math.Max(best.distance, 0.001f);
+                var ratio = secondBest.distance / Math.Max(best.distance, 0.001f);
 
-                _logger.LogDebug("📊 Separation ratio: {Ratio:F2} (required: {Required:F2})",
-                    separationRatio, _settings.MinSeparationRatio);
-
-                if (separationRatio < _settings.MinSeparationRatio)
+                if (ratio < _settings.MinSeparationRatio)
                 {
+                    // AMBIGUOUS - but don't create new identity if distances are very small
+                    if (best.distance < _settings.MinDistanceForNewIdentity)
+                    {
+                        _logger.LogWarning(
+                            "⚠️ Ambiguous but very close ({Dist:F4}) - accepting best match",
+                            best.distance);
+                        return (true, best.GlobalPersonId, best.distance, best.GlobalPersonId);
+                    }
+
                     _logger.LogWarning(
-                        "⚠️ AMBIGUOUS MATCH REJECTED: Best={BestDist:F4}, Second={SecondDist:F4}, Ratio={Ratio:F2}",
-                        best.distance, secondBest.distance, separationRatio);
-                    return (false, Guid.Empty, best.distance);
+                        "⚠️ AMBIGUOUS: Best={BestDist:F4}, Second={SecondDist:F4}, Ratio={Ratio:F2}",
+                        best.distance, secondBest.distance, ratio);
+                    return (false, Guid.Empty, best.distance, best.GlobalPersonId);
                 }
             }
 
-            // Rule 3: If distance is very small (<0.05), require spatial consistency
-            if (best.distance < 0.05f && boundingBox != null)
+            // Rule 3: Spatial consistency check for very close matches
+            if (best.distance < 0.05f && boundingBox != null && best.identity.LastBoundingBox != null)
             {
-                if (_identities.TryGetValue(best.id, out var identity) && identity.LastBoundingBox != null)
+                var timeDelta = (DateTime.UtcNow - best.identity.LastSeen).TotalSeconds;
+                if (timeDelta > 0 && timeDelta < 2.0)
                 {
-                    var timeDelta = (DateTime.UtcNow - identity.LastSeen).TotalSeconds;
-                    if (timeDelta < 2.0)
-                    {
-                        var spatialDist = CalculateCenterDistance(boundingBox, identity.LastBoundingBox);
-                        var maxMovement = 200 * timeDelta; // Max 200px/second movement
+                    var spatialDist = CalculateCenterDistance(boundingBox, best.identity.LastBoundingBox);
+                    var maxMovement = 300 * timeDelta; // Allow faster movement
 
-                        if (spatialDist > maxMovement)
-                        {
-                            _logger.LogWarning(
-                                "⚠️ SPATIAL INCONSISTENCY: Dist={Dist:F4} but moved {Spatial:F0}px in {Time:F1}s",
-                                best.distance, spatialDist, timeDelta);
-                            return (false, Guid.Empty, best.distance);
-                        }
+                    if (spatialDist > maxMovement)
+                    {
+                        _logger.LogDebug(
+                            "📍 Spatial check: moved {Dist:F0}px in {Time:F1}s (max: {Max:F0})",
+                            spatialDist, timeDelta, maxMovement);
+                        // Don't reject, just note it
                     }
                 }
             }
 
-            _logger.LogInformation("✅ MATCHED: {Id} (dist={Dist:F4})", best.id.ToString()[..8], best.distance);
-            return (true, best.id, best.distance);
+            _logger.LogInformation("✅ MATCHED: {Id} (dist={Dist:F4}, matches={Count})",
+                best.GlobalPersonId.ToString()[..8], best.distance, best.identity.MatchCount + 1);
+
+            return (true, best.GlobalPersonId, best.distance, best.GlobalPersonId);
         }
 
         private float CalculateCenterDistance(BoundingBox a, BoundingBox b)
@@ -255,16 +295,71 @@ namespace PersonDetection.Infrastructure.Identity
             return (float)Math.Sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
         }
 
+        private void ConsolidateSimilarIdentities(int cameraId)
+        {
+            if (!_cameraIdentities.TryGetValue(cameraId, out var camIds) || camIds.Count < 2)
+                return;
+
+            var identities = camIds
+                .Where(id => _identities.ContainsKey(id))
+                .Select(id => _identities[id])
+                .ToList();
+
+            var toMerge = new List<(Guid keep, Guid remove)>();
+
+            for (int i = 0; i < identities.Count; i++)
+            {
+                for (int j = i + 1; j < identities.Count; j++)
+                {
+                    var vecA = new FeatureVector(identities[i].OriginalFeatureVector);
+                    var vecB = new FeatureVector(identities[j].OriginalFeatureVector);
+                    var distance = vecA.EuclideanDistance(vecB);
+
+                    if (distance < _settings.ConsolidationThreshold)
+                    {
+                        // Keep the one with more matches
+                        var keep = identities[i].MatchCount >= identities[j].MatchCount
+                            ? identities[i].GlobalPersonId
+                            : identities[j].GlobalPersonId;
+                        var remove = keep == identities[i].GlobalPersonId
+                            ? identities[j].GlobalPersonId
+                            : identities[i].GlobalPersonId;
+
+                        toMerge.Add((keep, remove));
+                    }
+                }
+            }
+
+            foreach (var (keep, remove) in toMerge.Distinct())
+            {
+                if (_identities.TryRemove(remove, out var removed))
+                {
+                    camIds.Remove(remove);
+                    if (_identities.TryGetValue(keep, out var keeper))
+                    {
+                        keeper.MatchCount += removed.MatchCount;
+                    }
+                    _logger.LogWarning("🔗 Consolidated: {Remove} → {Keep}",
+                        remove.ToString()[..8], keep.ToString()[..8]);
+                }
+            }
+        }
+
         private void UpdateMetadataOnly(Guid personId, int cameraId, BoundingBox? boundingBox)
         {
             if (!_identities.TryGetValue(personId, out var identity))
                 return;
 
-            // Update ONLY metadata - NEVER touch the feature vector!
             identity.LastSeen = DateTime.UtcNow;
             identity.LastBoundingBox = boundingBox;
             if (cameraId > 0) identity.CameraId = cameraId;
             identity.MatchCount++;
+
+            // Mark as confirmed after multiple matches
+            if (identity.MatchCount >= 3)
+            {
+                identity.IsConfirmed = true;
+            }
         }
 
         private Guid CreateNewIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox)
@@ -272,47 +367,51 @@ namespace PersonDetection.Infrastructure.Identity
             var newId = Guid.NewGuid();
             var now = DateTime.UtcNow;
 
-            // Store ORIGINAL features - these will NEVER be modified
-            var originalFeatures = (float[])vector.Values.Clone();
-
             var identity = new PersonIdentity
             {
                 GlobalPersonId = newId,
                 DbId = 0,
-                OriginalFeatureVector = originalFeatures,
+                OriginalFeatureVector = (float[])vector.Values.Clone(),
                 LastSeen = now,
                 FirstSeen = now,
                 CameraId = cameraId,
                 MatchCount = 1,
-                LastBoundingBox = boundingBox
+                LastBoundingBox = boundingBox,
+                IsConfirmed = false
             };
 
             _identities[newId] = identity;
-            _originalFeatures[newId] = originalFeatures;
 
-            _logger.LogWarning("🆕 NEW PERSON: {Id} (total identities: {Total})",
-                newId.ToString()[..8], _identities.Count);
+            // Track per camera
+            if (!_cameraIdentities.TryGetValue(cameraId, out var camIds))
+            {
+                camIds = new HashSet<Guid>();
+                _cameraIdentities[cameraId] = camIds;
+            }
+            camIds.Add(newId);
+
+            _logger.LogWarning("🆕 NEW: {Id} (camera {Cam}, total: {Total}, cam-total: {CamTotal})",
+                newId.ToString()[..8], cameraId, _identities.Count, camIds.Count);
 
             return newId;
         }
 
         public bool TryMatch(FeatureVector vector, out Guid personId, out float similarity)
         {
-            var result = TryMatchStrict(vector, 0, null);
+            var activeIdentities = _identities.Values.ToList();
+            var result = TryMatchStrict(vector, activeIdentities, 0, null);
             personId = result.PersonId;
-            similarity = 1f / (1f + result.Distance);
+            similarity = 1f / (1f + result.BestDistance);
             return result.IsMatch;
         }
 
         public void UpdateIdentity(Guid personId, FeatureVector vector)
         {
-            // DO NOTHING - we never update feature vectors
-            _logger.LogDebug("UpdateIdentity called but ignored (vector updates disabled)");
+            // Do nothing - vectors are immutable
         }
 
         public void UpdateIdentity(Guid personId, FeatureVector vector, int cameraId)
         {
-            // Only update metadata
             UpdateMetadataOnly(personId, cameraId, null);
         }
 
@@ -331,6 +430,26 @@ namespace PersonDetection.Infrastructure.Identity
 
         public int GetActiveIdentityCount() => _identities.Count;
 
+        /// <summary>
+        /// Get confirmed unique person count (more reliable)
+        /// </summary>
+        public int GetConfirmedIdentityCount()
+        {
+            return _identities.Values.Count(i => i.IsConfirmed);
+        }
+
+        /// <summary>
+        /// Get unique count for specific camera
+        /// </summary>
+        public int GetCameraIdentityCount(int cameraId)
+        {
+            if (_cameraIdentities.TryGetValue(cameraId, out var ids))
+            {
+                return ids.Count(id => _identities.TryGetValue(id, out var i) && i.IsConfirmed);
+            }
+            return 0;
+        }
+
         public void CleanupExpired(TimeSpan expirationTime)
         {
             var threshold = DateTime.UtcNow - expirationTime;
@@ -341,8 +460,13 @@ namespace PersonDetection.Infrastructure.Identity
 
             foreach (var id in expired)
             {
-                _identities.TryRemove(id, out _);
-                _originalFeatures.TryRemove(id, out _);
+                if (_identities.TryRemove(id, out var identity))
+                {
+                    if (_cameraIdentities.TryGetValue(identity.CameraId, out var camIds))
+                    {
+                        camIds.Remove(id);
+                    }
+                }
             }
 
             if (expired.Count > 0)
@@ -351,15 +475,27 @@ namespace PersonDetection.Infrastructure.Identity
             }
         }
 
-        /// <summary>
-        /// Clear all identities - useful for resetting between sessions
-        /// </summary>
         public void ClearAllIdentities()
         {
             var count = _identities.Count;
             _identities.Clear();
-            _originalFeatures.Clear();
+            _cameraIdentities.Clear();
             _logger.LogWarning("🗑️ Cleared all {Count} identities", count);
+        }
+
+        /// <summary>
+        /// Clear identities for specific camera only
+        /// </summary>
+        public void ClearCameraIdentities(int cameraId)
+        {
+            if (_cameraIdentities.TryRemove(cameraId, out var ids))
+            {
+                foreach (var id in ids)
+                {
+                    _identities.TryRemove(id, out _);
+                }
+                _logger.LogWarning("🗑️ Cleared {Count} identities for camera {Cam}", ids.Count, cameraId);
+            }
         }
     }
 

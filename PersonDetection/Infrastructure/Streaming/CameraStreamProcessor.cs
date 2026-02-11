@@ -496,35 +496,50 @@ namespace PersonDetection.Infrastructure.Streaming
                         }
 
                         // Strategy 2: Run Re-ID for identity verification/creation
+                        // In DetectionLoop method, update the ReID section:
+
                         if (shouldRunReId)
                         {
                             try
                             {
-                                var reidConfig = new OSNetConfig();
-                                var featureVector = await _reidEngine!.ExtractFeaturesAsync(
-                                    jpeg, detection.BoundingBox, reidConfig, ct);
-
-                                tracked.Features = featureVector.Values;
-
-                                // Get or create identity with spatial context
-                                var reidId = _identityMatcher.GetOrCreateIdentity(
-                                    featureVector, _cameraId, detection.BoundingBox);
-
-                                // If Re-ID gives different result than spatial, trust Re-ID
-                                if (resolvedId == Guid.Empty || resolvedId != reidId)
+                                // Check minimum crop size before running ReID
+                                if (detection.BoundingBox.Width < 48 || detection.BoundingBox.Height < 96)
                                 {
-                                    if (resolvedId != Guid.Empty && resolvedId != reidId)
+                                    _logger.LogDebug("📏 Skipping ReID - crop too small: {W}x{H}",
+                                        detection.BoundingBox.Width, detection.BoundingBox.Height);
+                                    // Fall through to spatial matching
+                                }
+                                else
+                                {
+                                    var reidConfig = new OSNetConfig();
+                                    var featureVector = await _reidEngine!.ExtractFeaturesAsync(
+                                        jpeg, detection.BoundingBox, reidConfig, ct);
+
+                                    tracked.Features = featureVector.Values;
+
+                                    // Get or create identity with spatial context
+                                    var reidId = _identityMatcher.GetOrCreateIdentity(
+                                        featureVector, _cameraId, detection.BoundingBox);
+
+                                    // If Guid.Empty returned, ReID declined - use spatial tracking
+                                    if (reidId != Guid.Empty)
                                     {
-                                        _logger.LogDebug("🔄 Re-ID override: {Old} → {New}",
-                                            resolvedId.ToString()[..8], reidId.ToString()[..8]);
+                                        if (resolvedId == Guid.Empty || resolvedId != reidId)
+                                        {
+                                            if (resolvedId != Guid.Empty && resolvedId != reidId)
+                                            {
+                                                _logger.LogDebug("🔄 Re-ID override: {Old} → {New}",
+                                                    resolvedId.ToString()[..8], reidId.ToString()[..8]);
+                                            }
+                                            resolvedId = reidId;
+                                            tracked.GlobalPersonId = reidId;
+                                        }
                                     }
-                                    resolvedId = reidId;
-                                    tracked.GlobalPersonId = reidId;
                                 }
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogWarning(ex, "Re-ID failed for detection");
+                                _logger.LogWarning(ex, "Re-ID failed");
                             }
                         }
 

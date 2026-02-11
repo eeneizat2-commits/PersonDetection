@@ -4,57 +4,20 @@
 
     public interface IPersonIdentityMatcher
     {
-        /// <summary>
-        /// Get or create identity from feature vector
-        /// </summary>
         Guid GetOrCreateIdentity(FeatureVector vector);
-
-        /// <summary>
-        /// Get or create identity with camera context
-        /// </summary>
         Guid GetOrCreateIdentity(FeatureVector vector, int cameraId);
-
-        /// <summary>
-        /// Get or create identity with camera and spatial context (for better tracking)
-        /// </summary>
         Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox);
-
-        /// <summary>
-        /// Try to match against existing identities
-        /// </summary>
         bool TryMatch(FeatureVector vector, out Guid personId, out float similarity);
-
-        /// <summary>
-        /// Update an existing identity's feature vector
-        /// </summary>
         void UpdateIdentity(Guid personId, FeatureVector vector);
-
-        /// <summary>
-        /// Update identity with camera context
-        /// </summary>
         void UpdateIdentity(Guid personId, FeatureVector vector, int cameraId);
-
-        /// <summary>
-        /// Set database ID for a tracked identity
-        /// </summary>
         void SetDbId(Guid personId, int dbId);
-
-        /// <summary>
-        /// Get database ID for a tracked identity
-        /// </summary>
         int GetDbId(Guid personId);
-
-        /// <summary>
-        /// Get count of active identities in memory
-        /// </summary>
         int GetActiveIdentityCount();
-
-        /// <summary>
-        /// Cleanup expired identities
-        /// </summary>
+        int GetConfirmedIdentityCount();      // NEW
+        int GetCameraIdentityCount(int cameraId);  // NEW
         void CleanupExpired(TimeSpan expirationTime);
-
-        void ClearAllIdentities();  // NEW
+        void ClearAllIdentities();
+        void ClearCameraIdentities(int cameraId);  // NEW
     }
 
     public interface IDetectionValidator
