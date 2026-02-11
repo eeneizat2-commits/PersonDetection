@@ -435,7 +435,15 @@ namespace PersonDetection.Infrastructure.Streaming
             };
 
             int framesSinceLastReId = 0;
-            const int ReIdEveryNFrames = 5;
+            var reIdInterval = _settings.ReIdEveryNFrames > 0 ? _settings.ReIdEveryNFrames : 2;
+
+            // Multi-frame confirmation tracking
+            var pendingConfirmations = new Dictionary<Guid, PendingPerson>();
+            const int RequiredConfirmationFrames = 3;
+            const int MaxPendingAge = 10;
+
+            // Spatial tracking for non-ReId frames
+            var spatialTracker = new Dictionary<Guid, TrackedPerson>();
 
             while (!ct.IsCancellationRequested && _isConnected && !_disposed)
             {
@@ -447,14 +455,23 @@ namespace PersonDetection.Infrastructure.Streaming
                     lock (_frameLock) { jpeg = _currentJpeg; }
                     if (jpeg == null) continue;
 
+                    // Run YOLO detection
                     var detections = await _detectionEngine.DetectAsync(jpeg, config, ct);
+
+                    // Filter by minimum size
+                    detections = detections
+                        .Where(d => d.BoundingBox.Width >= _detectionSettings.MinWidth &&
+                                   d.BoundingBox.Height >= _detectionSettings.MinHeight)
+                        .ToList();
 
                     var trackedPersons = new List<TrackedPerson>();
                     framesSinceLastReId++;
 
                     bool shouldRunReId = _reidEngine != null &&
                                          detections.Count > 0 &&
-                                         framesSinceLastReId >= ReIdEveryNFrames;
+                                         framesSinceLastReId >= reIdInterval;
+
+                    var seenThisFrame = new HashSet<Guid>();
 
                     foreach (var detection in detections)
                     {
@@ -462,9 +479,23 @@ namespace PersonDetection.Infrastructure.Streaming
                         {
                             BoundingBox = detection.BoundingBox,
                             Confidence = detection.Confidence,
-                            GlobalPersonId = Guid.NewGuid()
+                            GlobalPersonId = Guid.Empty
                         };
 
+                        Guid resolvedId = Guid.Empty;
+
+                        // Strategy 1: Try spatial tracking first (fast, for continuity)
+                        var spatialMatch = FindBestSpatialMatch(detection.BoundingBox, spatialTracker);
+                        if (spatialMatch != null)
+                        {
+                            resolvedId = spatialMatch.GlobalPersonId;
+                            tracked.GlobalPersonId = resolvedId;
+                            tracked.Features = spatialMatch.Features;
+
+                            _logger.LogDebug("📍 Spatial match: {Id}", resolvedId.ToString()[..8]);
+                        }
+
+                        // Strategy 2: Run Re-ID for identity verification/creation
                         if (shouldRunReId)
                         {
                             try
@@ -474,31 +505,108 @@ namespace PersonDetection.Infrastructure.Streaming
                                     jpeg, detection.BoundingBox, reidConfig, ct);
 
                                 tracked.Features = featureVector.Values;
-                                var globalId = _identityMatcher.GetOrCreateIdentity(featureVector, _cameraId);
-                                tracked.GlobalPersonId = globalId;
 
-                                if (!_seenPersonIds.Contains(globalId))
+                                // Get or create identity with spatial context
+                                var reidId = _identityMatcher.GetOrCreateIdentity(
+                                    featureVector, _cameraId, detection.BoundingBox);
+
+                                // If Re-ID gives different result than spatial, trust Re-ID
+                                if (resolvedId == Guid.Empty || resolvedId != reidId)
                                 {
-                                    _seenPersonIds.Add(globalId);
-                                    tracked.IsNew = true;
+                                    if (resolvedId != Guid.Empty && resolvedId != reidId)
+                                    {
+                                        _logger.LogDebug("🔄 Re-ID override: {Old} → {New}",
+                                            resolvedId.ToString()[..8], reidId.ToString()[..8]);
+                                    }
+                                    resolvedId = reidId;
+                                    tracked.GlobalPersonId = reidId;
                                 }
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Re-ID failed for detection");
+                            }
                         }
-                        else if (_currentTrackedPersons.Count > 0)
+
+                        // Strategy 3: Position-based fallback
+                        if (resolvedId == Guid.Empty && _currentTrackedPersons.Count > 0)
                         {
                             var bestMatch = FindBestPositionMatch(detection.BoundingBox);
                             if (bestMatch != null)
                             {
                                 tracked.GlobalPersonId = bestMatch.GlobalPersonId;
                                 tracked.Features = bestMatch.Features;
+                                resolvedId = bestMatch.GlobalPersonId;
+
+                                _logger.LogDebug("📐 IoU match: {Id}", resolvedId.ToString()[..8]);
                             }
                         }
 
+                        // Create temporary tracking ID if still unresolved
+                        if (tracked.GlobalPersonId == Guid.Empty)
+                        {
+                            tracked.GlobalPersonId = Guid.NewGuid();
+                            _logger.LogDebug("🔄 Temp ID: {Id}", tracked.GlobalPersonId.ToString()[..8]);
+                        }
+
+                        resolvedId = tracked.GlobalPersonId;
+
+                        // Confirmation logic for unique count
+                        if (!_seenPersonIds.Contains(resolvedId))
+                        {
+                            if (!pendingConfirmations.ContainsKey(resolvedId))
+                            {
+                                pendingConfirmations[resolvedId] = new PendingPerson
+                                {
+                                    FirstSeen = DateTime.UtcNow,
+                                    FrameCount = 0,
+                                    HasFeatures = tracked.Features != null
+                                };
+                            }
+
+                            var pending = pendingConfirmations[resolvedId];
+                            pending.FrameCount++;
+                            pending.LastSeen = DateTime.UtcNow;
+
+                            // Only confirm if we have features AND enough frames
+                            if (pending.FrameCount >= RequiredConfirmationFrames && pending.HasFeatures)
+                            {
+                                _seenPersonIds.Add(resolvedId);
+                                pendingConfirmations.Remove(resolvedId);
+                                tracked.IsNew = true;
+
+                                _logger.LogInformation("✅ CONFIRMED: {Id} after {Frames} frames",
+                                    resolvedId.ToString()[..8], RequiredConfirmationFrames);
+                            }
+                        }
+
+                        seenThisFrame.Add(resolvedId);
                         trackedPersons.Add(tracked);
                     }
 
-                    if (shouldRunReId) framesSinceLastReId = 0;
+                    // Update spatial tracker
+                    spatialTracker.Clear();
+                    foreach (var p in trackedPersons)
+                    {
+                        spatialTracker[p.GlobalPersonId] = p;
+                    }
+
+                    if (shouldRunReId)
+                    {
+                        framesSinceLastReId = 0;
+
+                        // Clean up stale pending confirmations
+                        var staleIds = pendingConfirmations
+                            .Where(kvp => !seenThisFrame.Contains(kvp.Key) ||
+                                          kvp.Value.FrameCount > MaxPendingAge)
+                            .Select(kvp => kvp.Key)
+                            .ToList();
+
+                        foreach (var id in staleIds)
+                        {
+                            pendingConfirmations.Remove(id);
+                        }
+                    }
 
                     lock (_detectionLock)
                     {
@@ -511,21 +619,67 @@ namespace PersonDetection.Infrastructure.Streaming
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Detection error");
+                    _logger.LogError(ex, "Detection loop error");
                 }
             }
+        }
+
+        private class PendingPerson
+        {
+            public DateTime FirstSeen { get; set; }
+            public DateTime LastSeen { get; set; }
+            public int FrameCount { get; set; }
+            public bool HasFeatures { get; set; }
+        }
+
+        private TrackedPerson? FindBestSpatialMatch(BoundingBox newBox, Dictionary<Guid, TrackedPerson> tracker)
+        {
+            TrackedPerson? best = null;
+            float bestScore = float.MaxValue;
+
+            foreach (var (id, person) in tracker)
+            {
+                // Calculate center distance
+                var dx = (newBox.X + newBox.Width / 2f) - (person.BoundingBox.X + person.BoundingBox.Width / 2f);
+                var dy = (newBox.Y + newBox.Height / 2f) - (person.BoundingBox.Y + person.BoundingBox.Height / 2f);
+                var centerDist = (float)Math.Sqrt(dx * dx + dy * dy);
+
+                // Also consider size similarity
+                var sizeRatio = Math.Min(
+                    (float)newBox.Width / person.BoundingBox.Width,
+                    (float)person.BoundingBox.Width / newBox.Width) *
+                    Math.Min(
+                    (float)newBox.Height / person.BoundingBox.Height,
+                    (float)person.BoundingBox.Height / newBox.Height);
+
+                // Combined score (lower is better)
+                var score = centerDist / sizeRatio;
+
+                if (score < bestScore && centerDist < 100) // Max 100px movement
+                {
+                    bestScore = score;
+                    best = person;
+                }
+            }
+
+            return best;
         }
 
         private TrackedPerson? FindBestPositionMatch(BoundingBox newBox)
         {
             TrackedPerson? best = null;
-            float bestIoU = 0.3f;
+            float bestIoU = 0.25f; // Lowered threshold
 
             foreach (var person in _currentTrackedPersons)
             {
                 var iou = CalculateIoU(newBox, person.BoundingBox);
-                if (iou > bestIoU) { bestIoU = iou; best = person; }
+                if (iou > bestIoU)
+                {
+                    bestIoU = iou;
+                    best = person;
+                }
             }
+
             return best;
         }
 
@@ -684,17 +838,28 @@ namespace PersonDetection.Infrastructure.Streaming
         {
             try
             {
-                await _hubContext.Clients.Group($"camera_{_cameraId}")
-                    .SendAsync("DetectionUpdate", new
+                var update = new
+                {
+                    cameraId = _cameraId,           // Use camelCase explicitly
+                    count = persons.Count,
+                    uniqueCount = _uniquePersonCount,
+                    timestamp = DateTime.UtcNow,
+                    fps = _currentFps,
+                    persons = persons.Select(p => new
                     {
-                        CameraId = _cameraId,
-                        Count = persons.Count,
-                        UniqueCount = _uniquePersonCount,
-                        Timestamp = DateTime.UtcNow,
-                        Fps = _currentFps
-                    });
+                        id = p.GlobalPersonId.ToString()[..8],
+                        confidence = p.Confidence,
+                        isNew = p.IsNew
+                    }).ToList()
+                };
+
+                await _hubContext.Clients.Group($"camera_{_cameraId}")
+                    .SendAsync("DetectionUpdate", update);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to notify clients");
+            }
         }
 
         public async IAsyncEnumerable<byte[]> ReadFramesAsync([EnumeratorCancellation] CancellationToken ct = default)

@@ -70,16 +70,14 @@ builder.Services.AddSwaggerGen(c =>
 // SignalR
 builder.Services.AddSignalR(options =>
 {
-    options.MaximumReceiveMessageSize = signalRSettings.MaximumReceiveMessageSize;
-    options.KeepAliveInterval = TimeSpan.FromSeconds(signalRSettings.KeepAliveIntervalSeconds);
-    options.ClientTimeoutInterval = TimeSpan.FromSeconds(signalRSettings.ClientTimeoutSeconds);
-});
-builder.Services.AddSignalR(options =>
-{
-    options.EnableDetailedErrors = true;  // ✅ For debugging
+    options.EnableDetailedErrors = true;
     options.MaximumReceiveMessageSize = 102400;
     options.KeepAliveInterval = TimeSpan.FromSeconds(15);
     options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+})
+.AddJsonProtocol(options =>
+{
+    options.PayloadSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
 });
 
 // CORS
@@ -149,11 +147,26 @@ builder.Services.AddScoped<IQueryHandler<GetAllVideoJobsQuery, List<VideoProcess
 // ============================================
 // DOMAIN SERVICES
 // ============================================
+// Add TrackingSettings configuration
+builder.Services.Configure<TrackingSettings>(
+    builder.Configuration.GetSection(TrackingSettings.SectionName));
+
+// Load settings
+var trackingSettings = builder.Configuration
+    .GetSection(TrackingSettings.SectionName)
+    .Get<TrackingSettings>() ?? new TrackingSettings();
+
+// Register PersonIdentityService with new settings
+// In Program.cs, update the PersonIdentityService registration:
+
 builder.Services.AddSingleton<IPersonIdentityMatcher>(sp =>
-    new PersonIdentityService(
-        sp,  // Pass IServiceProvider
-        identitySettings.SimilarityThreshold,
-        sp.GetRequiredService<ILogger<PersonIdentityService>>()));
+{
+    var settings = sp.GetRequiredService<IOptions<IdentitySettings>>().Value;
+    return new PersonIdentityService(
+        sp,
+        settings,
+        sp.GetRequiredService<ILogger<PersonIdentityService>>());
+});
 
 // ============================================
 // DETECTION & RE-ID ENGINES (Singleton - expensive to create)

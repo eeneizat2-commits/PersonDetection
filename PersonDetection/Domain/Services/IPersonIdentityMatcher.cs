@@ -15,7 +15,12 @@
         Guid GetOrCreateIdentity(FeatureVector vector, int cameraId);
 
         /// <summary>
-        /// Try to match a feature vector to existing identity
+        /// Get or create identity with camera and spatial context (for better tracking)
+        /// </summary>
+        Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox);
+
+        /// <summary>
+        /// Try to match against existing identities
         /// </summary>
         bool TryMatch(FeatureVector vector, out Guid personId, out float similarity);
 
@@ -30,12 +35,12 @@
         void UpdateIdentity(Guid personId, FeatureVector vector, int cameraId);
 
         /// <summary>
-        /// Set the database ID for a person
+        /// Set database ID for a tracked identity
         /// </summary>
         void SetDbId(Guid personId, int dbId);
 
         /// <summary>
-        /// Get the database ID for a person
+        /// Get database ID for a tracked identity
         /// </summary>
         int GetDbId(Guid personId);
 
@@ -45,10 +50,13 @@
         int GetActiveIdentityCount();
 
         /// <summary>
-        /// Clean up expired identities
+        /// Cleanup expired identities
         /// </summary>
         void CleanupExpired(TimeSpan expirationTime);
+
+        void ClearAllIdentities();  // NEW
     }
+
     public interface IDetectionValidator
     {
         bool IsValid(PersonDetection.Domain.Entities.DetectedPerson detection);

@@ -12,8 +12,8 @@ using PersonDetection.Infrastructure.Context;
 namespace PersonDetection.Migrations
 {
     [DbContext(typeof(DetectionContext))]
-    [Migration("20251223232711_UpdateVedioJobEntity3")]
-    partial class UpdateVedioJobEntity3
+    [Migration("20260211134725_AddSightingCountToUniquePerson")]
+    partial class AddSightingCountToUniquePerson
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)

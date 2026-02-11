@@ -12,7 +12,7 @@ using PersonDetection.Infrastructure.Context;
 namespace PersonDetection.Migrations
 {
     [DbContext(typeof(DetectionContext))]
-    [Migration("20251223211407_InitialCreate")]
+    [Migration("20260210165828_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -317,6 +317,9 @@ namespace PersonDetection.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<double?>("AveragePersonsPerFrame")
+                        .HasColumnType("float");
+
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("datetime2");
 
@@ -342,6 +345,9 @@ namespace PersonDetection.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
+                    b.Property<int?>("PeakPersonCount")
+                        .HasColumnType("int");
+
                     b.Property<int>("ProcessedFrames")
                         .HasColumnType("int");
 
@@ -353,6 +359,10 @@ namespace PersonDetection.Migrations
 
                     b.Property<int>("State")
                         .HasColumnType("int");
+
+                    b.Property<string>("StoredFilePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
 
                     b.Property<int>("TotalDetections")
                         .HasColumnType("int");

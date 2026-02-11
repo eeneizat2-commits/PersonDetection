@@ -5,7 +5,7 @@
 namespace PersonDetection.Migrations
 {
     /// <inheritdoc />
-    public partial class UpdateVedioJobEntity : Migration
+    public partial class AddSightingCountToUniquePerson : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
