@@ -143,7 +143,7 @@ builder.Services.AddScoped<ICommandHandler<ProcessVideoCommand, VideoUploadResul
 builder.Services.AddScoped<IQueryHandler<GetVideoStatusQuery, VideoProcessingStatusDto?>, GetVideoStatusHandler>();
 builder.Services.AddScoped<IQueryHandler<GetVideoSummaryQuery, VideoProcessingSummaryDto?>, GetVideoSummaryHandler>();
 builder.Services.AddScoped<IQueryHandler<GetAllVideoJobsQuery, List<VideoProcessingStatusDto>>, GetAllVideoJobsHandler>();
-
+builder.Services.AddScoped<IQueryHandler<GetHistoricalStatsQuery, HistoricalStatsDto>, GetHistoricalStatsHandler>();
 // ============================================
 // DOMAIN SERVICES
 // ============================================

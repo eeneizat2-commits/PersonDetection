@@ -22,6 +22,7 @@ import { DetectionService } from '../../services/detection.service';
 import { CameraDto, CameraType, DetectionUpdate, GlobalStats } from '../../core/models/detection.models';
 import { AddCameraDialogComponent } from '../add-camera-dialog/add-camera-dialog.component';
 import { VideoUploadDialogComponent } from '../video-upload-dialog/video-upload-dialog.component';
+import { StatsDialogComponent } from '../stats-dialog/stats-dialog.component';
 
 @Component({
     selector: 'app-dashboard',
@@ -96,6 +97,13 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
         this.destroy$.next();
         this.destroy$.complete();
+    }
+
+    openStatsDialog(): void {
+        this.dialog.open(StatsDialogComponent, {
+            width: '800px',
+            maxHeight: '90vh'
+        });
     }
 
     private loadCameras(): void {
