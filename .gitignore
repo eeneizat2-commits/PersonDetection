@@ -367,3 +367,8 @@ FodyWeavers.xsd
 /PersonDetection/Infrastructure/Models/yolov8l.onnx
 /PersonDetection/Infrastructure/Models/yolov8n.onnx
 /PersonDetection/Infrastructure/Models/yolov8s.onnx
+/PersonDetection/Migrations/20251223211407_InitialCreate.cs
+/PersonDetection/Migrations/20251223220601_UpdateVedioJobEntity.cs
+/PersonDetection/Migrations/20251223231318_UpdateVedioJobEntity2.cs
+/PersonDetection/Migrations/20251223232711_UpdateVedioJobEntity3.cs
+/PersonDetection/Migrations/DetectionContextModelSnapshot.cs
