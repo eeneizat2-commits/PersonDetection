@@ -4,6 +4,7 @@
     using PersonDetection.Application.Queries;
     using PersonDetection.Application.Services;
     using PersonDetection.Domain.Services;
+    using PersonDetection.Infrastructure.Identity;
 
     [ApiController]
     [Route("api/[controller]")]
@@ -48,6 +49,60 @@
         {
             var count = _identityMatcher.GetActiveIdentityCount();
             return Ok(new { activeIdentities = count });
+        }
+
+        [HttpGet("stats")]
+        public IActionResult GetGlobalStats()
+        {
+            var todayUnique = _identityMatcher.GetTodayUniqueCount();
+            var totalInMemory = _identityMatcher.GetActiveIdentityCount();
+            var confirmed = _identityMatcher.GetConfirmedIdentityCount();
+
+            return Ok(new
+            {
+                todayUniqueCount = todayUnique,
+                totalInMemory = totalInMemory,
+                confirmedCount = confirmed,
+                timestamp = DateTime.UtcNow
+            });
+        }
+
+        [HttpPost("reload-from-database")]
+        public async Task<IActionResult> ReloadFromDatabase()
+        {
+            if (_identityMatcher is PersonIdentityService service)
+            {
+                await service.ReloadFromDatabaseAsync();
+                return Ok(new { message = "Reloaded from database", count = _identityMatcher.GetActiveIdentityCount() });
+            }
+            return BadRequest("Service doesn't support reload");
+        }
+
+        // In DetectionController.cs
+        [HttpPost("new-session")]
+        public IActionResult StartNewSession()
+        {
+            if (_identityMatcher is PersonIdentityService service)
+            {
+                service.StartNewSession();
+                return Ok(new
+                {
+                    message = "New session started",
+                    timestamp = DateTime.UtcNow
+                });
+            }
+            return BadRequest("Service doesn't support sessions");
+        }
+
+        [HttpGet("counts")]
+        public IActionResult GetCounts()
+        {
+            return Ok(new
+            {
+                globalUnique = _identityMatcher.GetConfirmedIdentityCount(),
+                totalInMemory = _identityMatcher.GetActiveIdentityCount(),
+                timestamp = DateTime.UtcNow
+            });
         }
     }
 }

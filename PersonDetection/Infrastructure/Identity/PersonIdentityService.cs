@@ -13,24 +13,40 @@ namespace PersonDetection.Infrastructure.Identity
 
     public class PersonIdentityService : IPersonIdentityMatcher
     {
-        private readonly ConcurrentDictionary<Guid, PersonIdentity> _identities = new();
-        private readonly ConcurrentDictionary<int, HashSet<Guid>> _cameraIdentities = new(); // Per-camera tracking
+        // GLOBAL identity store - shared across ALL cameras
+        private readonly ConcurrentDictionary<Guid, PersonIdentity> _globalIdentities = new();
+
+        // Per-camera active tracking (for spatial matching)
+        private readonly ConcurrentDictionary<int, ConcurrentDictionary<Guid, DateTime>> _cameraActivePersons = new();
+
+        // Confirmed unique persons (for accurate counting)
+        private readonly ConcurrentDictionary<Guid, bool> _confirmedPersons = new();
+
         private readonly IServiceProvider _serviceProvider;
         private readonly IdentitySettings _settings;
         private readonly ILogger<PersonIdentityService> _logger;
-        private DateTime _lastConsolidation = DateTime.UtcNow;
+
+        private bool _isInitialized = false;
+        private readonly SemaphoreSlim _initLock = new(1, 1);
+
+
+        private DateTime _sessionStartTime = DateTime.UtcNow;
+        private readonly ConcurrentDictionary<Guid, DateTime> _sessionPersons = new();
+
 
         private class PersonIdentity
         {
             public Guid GlobalPersonId { get; set; }
             public int DbId { get; set; }
-            public float[] OriginalFeatureVector { get; set; } = null!;
-            public DateTime LastSeen { get; set; }
+            public float[] FeatureVector { get; set; } = null!;
             public DateTime FirstSeen { get; set; }
-            public int CameraId { get; set; }
+            public DateTime LastSeen { get; set; }
+            public int FirstCameraId { get; set; }
+            public int LastCameraId { get; set; }
             public int MatchCount { get; set; } = 1;
+            public HashSet<int> SeenOnCameras { get; set; } = new();
             public BoundingBox? LastBoundingBox { get; set; }
-            public bool IsConfirmed { get; set; } = false;  // Only count confirmed identities
+            public bool IsFromDatabase { get; set; } = false;
         }
 
         public PersonIdentityService(
@@ -43,11 +59,21 @@ namespace PersonDetection.Infrastructure.Identity
             _logger = logger;
 
             _logger.LogWarning(
-                "🚀 PersonIdentityService: DistThresh={Dist}, MinNewDist={MinNew}, MaxPerCam={Max}, Consolidation={Con}",
+                "🚀 PersonIdentityService: GlobalMatch={Global}, DistThresh={Dist}, MinNew={MinNew}, LoadDB={LoadDB}",
+                _settings.EnableGlobalMatching,
                 _settings.DistanceThreshold,
                 _settings.MinDistanceForNewIdentity,
-                _settings.MaxIdentitiesPerCamera,
-                _settings.EnableIdentityConsolidation);
+                _settings.LoadFromDatabaseOnStartup);
+
+            // Start async initialization
+            if (_settings.LoadFromDatabaseOnStartup)
+            {
+                Task.Run(InitializeFromDatabaseAsync);
+            }
+            else
+            {
+                _isInitialized = true;
+            }
         }
 
         // Backward compatible constructor
@@ -59,9 +85,83 @@ namespace PersonDetection.Infrastructure.Identity
             : this(serviceProvider, new IdentitySettings
             {
                 DistanceThreshold = distanceThreshold,
-                UpdateVectorOnMatch = false
+                UpdateVectorOnMatch = false,
+                EnableGlobalMatching = true,
+                LoadFromDatabaseOnStartup = true
             }, logger)
         {
+        }
+
+        /// <summary>
+        /// Load ALL known persons from database for global matching
+        /// </summary>
+        private async Task InitializeFromDatabaseAsync()
+        {
+            await _initLock.WaitAsync();
+            try
+            {
+                if (_isInitialized) return;
+
+                _logger.LogInformation("📥 Loading global identities from database...");
+
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+                var cutoff = DateTime.UtcNow.AddHours(-_settings.DatabaseLoadHours);
+
+                var persons = await context.UniquePersons
+                    .Where(p => p.IsActive && p.LastSeenAt >= cutoff)
+                    .OrderByDescending(p => p.TotalSightings)
+                    .Take(_settings.MaxIdentitiesInMemory)
+                    .ToListAsync();
+
+                int loaded = 0;
+                foreach (var person in persons)
+                {
+                    var features = person.GetFeatureArray();
+                    if (features != null && features.Length == 512)
+                    {
+                        var identity = new PersonIdentity
+                        {
+                            GlobalPersonId = person.GlobalPersonId,
+                            DbId = person.Id,
+                            FeatureVector = features,
+                            FirstSeen = person.FirstSeenAt,
+                            LastSeen = person.LastSeenAt,
+                            FirstCameraId = person.FirstSeenCameraId,
+                            LastCameraId = person.LastSeenCameraId,
+                            MatchCount = person.TotalSightings,
+                            IsFromDatabase = true
+                        };
+
+                        identity.SeenOnCameras.Add(person.FirstSeenCameraId);
+                        identity.SeenOnCameras.Add(person.LastSeenCameraId);
+
+                        _globalIdentities[person.GlobalPersonId] = identity;
+
+                        // Mark as confirmed if has multiple sightings
+                        if (person.TotalSightings >= _settings.ConfirmationMatchCount)
+                        {
+                            _confirmedPersons[person.GlobalPersonId] = true;
+                        }
+
+                        loaded++;
+                    }
+                }
+
+                _isInitialized = true;
+                _logger.LogWarning("✅ Loaded {Count} global identities from database ({Confirmed} confirmed)",
+                    loaded, _confirmedPersons.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Failed to load identities from database");
+                _isInitialized = true; // Continue anyway
+            }
+            finally
+            {
+                _initLock.Release();
+            }
         }
 
         public Guid GetOrCreateIdentity(FeatureVector vector)
@@ -76,12 +176,12 @@ namespace PersonDetection.Infrastructure.Identity
 
         public Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox)
         {
-            // Check if bounding box is too small for reliable ReID
+            // Check crop size
             if (boundingBox != null && !IsSufficientSizeForReId(boundingBox))
             {
-                _logger.LogDebug("📏 Crop too small ({W}x{H}) - using spatial tracking only",
+                _logger.LogDebug("📏 Crop too small ({W}x{H}) for ReID",
                     boundingBox.Width, boundingBox.Height);
-                return Guid.Empty; // Signal to use spatial tracking
+                return Guid.Empty;
             }
 
             // Validate feature vector
@@ -91,65 +191,47 @@ namespace PersonDetection.Infrastructure.Identity
                 return Guid.Empty;
             }
 
-            // Periodic consolidation
-            if (_settings.EnableIdentityConsolidation &&
-                (DateTime.UtcNow - _lastConsolidation).TotalSeconds > 10)
-            {
-                ConsolidateSimilarIdentities(cameraId);
-                _lastConsolidation = DateTime.UtcNow;
-            }
-
-            // Get active identities for this camera (time-windowed)
-            var activeIdentities = GetActiveIdentities(cameraId);
-
-            // Try to match
-            var matchResult = TryMatchStrict(vector, activeIdentities, cameraId, boundingBox);
+            // GLOBAL matching
+            var matchResult = TryMatchGlobal(vector, cameraId, boundingBox);
 
             if (matchResult.IsMatch)
             {
-                UpdateMetadataOnly(matchResult.PersonId, cameraId, boundingBox);
+                UpdateIdentityOnMatch(matchResult.PersonId, cameraId, boundingBox, matchResult.IsAmbiguous);
+                TrackActiveOnCamera(matchResult.PersonId, cameraId);
                 return matchResult.PersonId;
             }
 
-            // Check if we should create new identity
-            if (matchResult.BestDistance < _settings.MinDistanceForNewIdentity)
+            // Check minimum distance - force match if very close
+            if (matchResult.BestDistance < _settings.MinDistanceForNewIdentity &&
+                matchResult.BestMatchId != Guid.Empty)
             {
-                // Distance is very small - probably same person, force match to closest
                 _logger.LogWarning("🔗 Distance {Dist:F4} < MinNew {Min:F4} - forcing match to {Id}",
                     matchResult.BestDistance, _settings.MinDistanceForNewIdentity,
                     matchResult.BestMatchId.ToString()[..8]);
 
-                UpdateMetadataOnly(matchResult.BestMatchId, cameraId, boundingBox);
+                UpdateIdentityOnMatch(matchResult.BestMatchId, cameraId, boundingBox, true);
+                TrackActiveOnCamera(matchResult.BestMatchId, cameraId);
                 return matchResult.BestMatchId;
             }
 
-            // Check identity limit
-            if (!_cameraIdentities.TryGetValue(cameraId, out var camIds))
-            {
-                camIds = new HashSet<Guid>();
-                _cameraIdentities[cameraId] = camIds;
-            }
+            // Create new GLOBAL identity
+            var newId = CreateNewGlobalIdentity(vector, cameraId, boundingBox);
+            TrackActiveOnCamera(newId, cameraId);
 
-            if (camIds.Count >= _settings.MaxIdentitiesPerCamera)
-            {
-                // Force match to closest identity
-                if (matchResult.BestMatchId != Guid.Empty)
-                {
-                    _logger.LogWarning("🚫 Max identities ({Max}) reached - forcing match to closest",
-                        _settings.MaxIdentitiesPerCamera);
-                    UpdateMetadataOnly(matchResult.BestMatchId, cameraId, boundingBox);
-                    return matchResult.BestMatchId;
-                }
-            }
-
-            // Create new identity
-            return CreateNewIdentity(vector, cameraId, boundingBox);
+            return newId;
         }
 
         private bool IsSufficientSizeForReId(BoundingBox box)
         {
-            return box.Width >= _settings.MinCropWidth &&
-                   box.Height >= _settings.MinCropHeight;
+            // Use area-based check instead of strict width/height
+            var minArea = _settings.MinCropWidth * _settings.MinCropHeight;
+            var cropArea = box.Width * box.Height;
+
+            // Also allow if one dimension is good even if other is small
+            var hasGoodWidth = box.Width >= _settings.MinCropWidth;
+            var hasGoodHeight = box.Height >= _settings.MinCropHeight;
+
+            return cropArea >= minArea || (hasGoodWidth && hasGoodHeight);
         }
 
         private bool IsValidFeatureVector(FeatureVector vector)
@@ -162,207 +244,155 @@ namespace PersonDetection.Infrastructure.Identity
             if (values.Any(v => float.IsNaN(v) || float.IsInfinity(v)))
                 return false;
 
-            // Check for degenerate vectors
-            var variance = CalculateVariance(values);
-            if (variance < 0.001f)
+            var variance = values.Select(v => v * v).Average() - Math.Pow(values.Average(), 2);
+            if (variance < 0.0001f)
             {
-                _logger.LogWarning("⚠️ Low variance feature vector: {Var:F6}", variance);
+                _logger.LogWarning("⚠️ Low variance feature vector");
                 return false;
             }
 
             return true;
         }
 
-        private float CalculateVariance(float[] values)
+        private void TrackActiveOnCamera(Guid personId, int cameraId)
         {
-            var mean = values.Average();
-            return values.Select(v => (v - mean) * (v - mean)).Average();
-        }
+            if (cameraId <= 0) return;
 
-        private List<PersonIdentity> GetActiveIdentities(int cameraId)
-        {
-            var cutoff = DateTime.UtcNow.AddSeconds(-_settings.TemporalWindowSeconds);
-
-            // Get identities from this camera that were seen recently
-            return _identities.Values
-                .Where(i => i.CameraId == cameraId && i.LastSeen >= cutoff)
-                .OrderByDescending(i => i.LastSeen)
-                .Take(_settings.MaxIdentitiesPerCamera)
-                .ToList();
-        }
-
-        private (bool IsMatch, Guid PersonId, float BestDistance, Guid BestMatchId) TryMatchStrict(
-            FeatureVector vector,
-            List<PersonIdentity> activeIdentities,
-            int cameraId,
-            BoundingBox? boundingBox)
-        {
-            if (activeIdentities.Count == 0)
+            if (!_cameraActivePersons.TryGetValue(cameraId, out var activeDict))
             {
-                _logger.LogDebug("🔍 No active identities for camera {Cam}", cameraId);
-                return (false, Guid.Empty, float.MaxValue, Guid.Empty);
+                activeDict = new ConcurrentDictionary<Guid, DateTime>();
+                _cameraActivePersons[cameraId] = activeDict;
             }
 
-            // Calculate distances
-            var distances = activeIdentities
-                .Select(identity => {
-                    var storedVector = new FeatureVector(identity.OriginalFeatureVector);
+            activeDict[personId] = DateTime.UtcNow;
+        }
+
+        /// <summary>
+        /// GLOBAL matching - checks against ALL known identities across ALL cameras
+        /// </summary>
+        private (bool IsMatch, Guid PersonId, float BestDistance, Guid BestMatchId, bool IsAmbiguous) TryMatchGlobal(
+       FeatureVector vector,
+       int cameraId,
+       BoundingBox? boundingBox)
+        {
+            if (_globalIdentities.IsEmpty)
+            {
+                _logger.LogDebug("🔍 No global identities to match against");
+                return (false, Guid.Empty, float.MaxValue, Guid.Empty, false);
+            }
+
+            // Calculate distances to ALL global identities
+            var distances = _globalIdentities.Values
+                .Select(identity =>
+                {
+                    var storedVector = new FeatureVector(identity.FeatureVector);
                     var distance = vector.EuclideanDistance(storedVector);
                     return (identity.GlobalPersonId, distance, identity);
                 })
                 .OrderBy(d => d.distance)
+                .Take(10)
                 .ToList();
+
+            if (distances.Count == 0)
+                return (false, Guid.Empty, float.MaxValue, Guid.Empty, false);
 
             var best = distances[0];
             var secondBest = distances.Count > 1
                 ? distances[1]
                 : (GlobalPersonId: Guid.Empty, distance: float.MaxValue, identity: (PersonIdentity?)null);
 
-            // Log top matches
-            _logger.LogInformation(
-                "🔍 Camera {Cam}: Best={BestId}:{BestDist:F4}, Second={SecondDist:F4}, Active={Count}",
-                cameraId,
-                best.GlobalPersonId.ToString()[..8],
-                best.distance,
-                secondBest.distance,
-                activeIdentities.Count);
-
-            // Rule 1: Must be below threshold
-            if (best.distance > _settings.DistanceThreshold)
+            // Determine threshold
+            var threshold = _settings.DistanceThreshold;
+            var isCrossCamera = best.identity.LastCameraId != cameraId;
+            if (_settings.EnableGlobalMatching && isCrossCamera)
             {
-                _logger.LogInformation("❌ NO MATCH: {Dist:F4} > threshold {Thresh:F4}",
-                    best.distance, _settings.DistanceThreshold);
-                return (false, Guid.Empty, best.distance, best.GlobalPersonId);
+                threshold = _settings.GlobalMatchThreshold;
             }
 
-            // Rule 2: Check separation (only if second best exists and is close)
+            _logger.LogInformation(
+                "🌍 GLOBAL: Best={Id}:{Dist:F4} (cam{Cam}), Second={SecondDist:F4}, Thresh={Thresh:F4}, Cross={Cross}",
+                best.GlobalPersonId.ToString()[..8],
+                best.distance,
+                best.identity.LastCameraId,
+                secondBest.distance,
+                threshold,
+                isCrossCamera);
+
+            // Rule 1: Must be below threshold
+            if (best.distance > threshold)
+            {
+                _logger.LogInformation("❌ NO MATCH: {Dist:F4} > threshold {Thresh:F4}",
+                    best.distance, threshold);
+                return (false, Guid.Empty, best.distance, best.GlobalPersonId, false);
+            }
+
+            // Rule 2: Check separation
+            bool isAmbiguous = false;
             if (_settings.RequireMinimumSeparation &&
                 secondBest.GlobalPersonId != Guid.Empty &&
-                secondBest.distance < _settings.DistanceThreshold)
+                secondBest.distance < threshold)
             {
                 var ratio = secondBest.distance / Math.Max(best.distance, 0.001f);
 
                 if (ratio < _settings.MinSeparationRatio)
                 {
-                    // AMBIGUOUS - but don't create new identity if distances are very small
+                    isAmbiguous = true;
+
+                    // Only accept if distance is very small AND below MinDistanceForNewIdentity
                     if (best.distance < _settings.MinDistanceForNewIdentity)
                     {
                         _logger.LogWarning(
-                            "⚠️ Ambiguous but very close ({Dist:F4}) - accepting best match",
-                            best.distance);
-                        return (true, best.GlobalPersonId, best.distance, best.GlobalPersonId);
+                            "⚠️ AMBIGUOUS MATCH (accepted): Best={Best:F4}, Second={Second:F4}, Ratio={Ratio:F2}",
+                            best.distance, secondBest.distance, ratio);
+                        return (true, best.GlobalPersonId, best.distance, best.GlobalPersonId, true);
                     }
-
-                    _logger.LogWarning(
-                        "⚠️ AMBIGUOUS: Best={BestDist:F4}, Second={SecondDist:F4}, Ratio={Ratio:F2}",
-                        best.distance, secondBest.distance, ratio);
-                    return (false, Guid.Empty, best.distance, best.GlobalPersonId);
-                }
-            }
-
-            // Rule 3: Spatial consistency check for very close matches
-            if (best.distance < 0.05f && boundingBox != null && best.identity.LastBoundingBox != null)
-            {
-                var timeDelta = (DateTime.UtcNow - best.identity.LastSeen).TotalSeconds;
-                if (timeDelta > 0 && timeDelta < 2.0)
-                {
-                    var spatialDist = CalculateCenterDistance(boundingBox, best.identity.LastBoundingBox);
-                    var maxMovement = 300 * timeDelta; // Allow faster movement
-
-                    if (spatialDist > maxMovement)
+                    else
                     {
-                        _logger.LogDebug(
-                            "📍 Spatial check: moved {Dist:F0}px in {Time:F1}s (max: {Max:F0})",
-                            spatialDist, timeDelta, maxMovement);
-                        // Don't reject, just note it
+                        _logger.LogWarning(
+                            "❌ AMBIGUOUS MATCH (rejected): Best={Best:F4}, Second={Second:F4}, Ratio={Ratio:F2}",
+                            best.distance, secondBest.distance, ratio);
+                        return (false, Guid.Empty, best.distance, best.GlobalPersonId, true);
                     }
                 }
             }
 
-            _logger.LogInformation("✅ MATCHED: {Id} (dist={Dist:F4}, matches={Count})",
-                best.GlobalPersonId.ToString()[..8], best.distance, best.identity.MatchCount + 1);
+            // Clear match
+            var matchType = isCrossCamera ? "CROSS-CAMERA" : "SAME-CAMERA";
+            _logger.LogInformation("✅ {Type} MATCH: {Id} (dist={Dist:F4}, seen on {Cams} cameras)",
+                matchType,
+                best.GlobalPersonId.ToString()[..8],
+                best.distance,
+                best.identity.SeenOnCameras.Count);
 
-            return (true, best.GlobalPersonId, best.distance, best.GlobalPersonId);
+            return (true, best.GlobalPersonId, best.distance, best.GlobalPersonId, false);
         }
 
-        private float CalculateCenterDistance(BoundingBox a, BoundingBox b)
+        private void UpdateIdentityOnMatch(Guid personId, int cameraId, BoundingBox? boundingBox, bool isAmbiguous = false)
         {
-            var ax = a.X + a.Width / 2f;
-            var ay = a.Y + a.Height / 2f;
-            var bx = b.X + b.Width / 2f;
-            var by = b.Y + b.Height / 2f;
-
-            return (float)Math.Sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
-        }
-
-        private void ConsolidateSimilarIdentities(int cameraId)
-        {
-            if (!_cameraIdentities.TryGetValue(cameraId, out var camIds) || camIds.Count < 2)
-                return;
-
-            var identities = camIds
-                .Where(id => _identities.ContainsKey(id))
-                .Select(id => _identities[id])
-                .ToList();
-
-            var toMerge = new List<(Guid keep, Guid remove)>();
-
-            for (int i = 0; i < identities.Count; i++)
-            {
-                for (int j = i + 1; j < identities.Count; j++)
-                {
-                    var vecA = new FeatureVector(identities[i].OriginalFeatureVector);
-                    var vecB = new FeatureVector(identities[j].OriginalFeatureVector);
-                    var distance = vecA.EuclideanDistance(vecB);
-
-                    if (distance < _settings.ConsolidationThreshold)
-                    {
-                        // Keep the one with more matches
-                        var keep = identities[i].MatchCount >= identities[j].MatchCount
-                            ? identities[i].GlobalPersonId
-                            : identities[j].GlobalPersonId;
-                        var remove = keep == identities[i].GlobalPersonId
-                            ? identities[j].GlobalPersonId
-                            : identities[i].GlobalPersonId;
-
-                        toMerge.Add((keep, remove));
-                    }
-                }
-            }
-
-            foreach (var (keep, remove) in toMerge.Distinct())
-            {
-                if (_identities.TryRemove(remove, out var removed))
-                {
-                    camIds.Remove(remove);
-                    if (_identities.TryGetValue(keep, out var keeper))
-                    {
-                        keeper.MatchCount += removed.MatchCount;
-                    }
-                    _logger.LogWarning("🔗 Consolidated: {Remove} → {Keep}",
-                        remove.ToString()[..8], keep.ToString()[..8]);
-                }
-            }
-        }
-
-        private void UpdateMetadataOnly(Guid personId, int cameraId, BoundingBox? boundingBox)
-        {
-            if (!_identities.TryGetValue(personId, out var identity))
+            if (!_globalIdentities.TryGetValue(personId, out var identity))
                 return;
 
             identity.LastSeen = DateTime.UtcNow;
             identity.LastBoundingBox = boundingBox;
-            if (cameraId > 0) identity.CameraId = cameraId;
             identity.MatchCount++;
 
-            // Mark as confirmed after multiple matches
-            if (identity.MatchCount >= 3)
+            if (cameraId > 0)
             {
-                identity.IsConfirmed = true;
+                identity.LastCameraId = cameraId;
+                identity.SeenOnCameras.Add(cameraId);
+            }
+
+            // Only confirm if NOT ambiguous OR if settings allow it
+            if (!isAmbiguous || _settings.AmbiguousMatchAsConfirmed)
+            {
+                if (identity.MatchCount >= _settings.ConfirmationMatchCount)
+                {
+                    _confirmedPersons[personId] = true;
+                }
             }
         }
 
-        private Guid CreateNewIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox)
+        private Guid CreateNewGlobalIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox)
         {
             var newId = Guid.NewGuid();
             var now = DateTime.UtcNow;
@@ -371,35 +401,44 @@ namespace PersonDetection.Infrastructure.Identity
             {
                 GlobalPersonId = newId,
                 DbId = 0,
-                OriginalFeatureVector = (float[])vector.Values.Clone(),
-                LastSeen = now,
+                FeatureVector = (float[])vector.Values.Clone(),
                 FirstSeen = now,
-                CameraId = cameraId,
+                LastSeen = now,
+                FirstCameraId = cameraId,
+                LastCameraId = cameraId,
                 MatchCount = 1,
                 LastBoundingBox = boundingBox,
-                IsConfirmed = false
+                IsFromDatabase = false
             };
 
-            _identities[newId] = identity;
-
-            // Track per camera
-            if (!_cameraIdentities.TryGetValue(cameraId, out var camIds))
+            if (cameraId > 0)
             {
-                camIds = new HashSet<Guid>();
-                _cameraIdentities[cameraId] = camIds;
+                identity.SeenOnCameras.Add(cameraId);
             }
-            camIds.Add(newId);
 
-            _logger.LogWarning("🆕 NEW: {Id} (camera {Cam}, total: {Total}, cam-total: {CamTotal})",
-                newId.ToString()[..8], cameraId, _identities.Count, camIds.Count);
+            _globalIdentities[newId] = identity;
+
+            _logger.LogWarning("🆕 NEW GLOBAL IDENTITY: {Id} on camera {Cam} (total: {Total})",
+                newId.ToString()[..8], cameraId, _globalIdentities.Count);
 
             return newId;
         }
 
+        /// <summary>
+        /// Called when identity is saved to database - update our record
+        /// </summary>
+        public void OnIdentitySavedToDatabase(Guid personId, int dbId)
+        {
+            if (_globalIdentities.TryGetValue(personId, out var identity))
+            {
+                identity.DbId = dbId;
+                identity.IsFromDatabase = true;
+            }
+        }
+
         public bool TryMatch(FeatureVector vector, out Guid personId, out float similarity)
         {
-            var activeIdentities = _identities.Values.ToList();
-            var result = TryMatchStrict(vector, activeIdentities, 0, null);
+            var result = TryMatchGlobal(vector, 0, null);
             personId = result.PersonId;
             similarity = 1f / (1f + result.BestDistance);
             return result.IsMatch;
@@ -407,95 +446,242 @@ namespace PersonDetection.Infrastructure.Identity
 
         public void UpdateIdentity(Guid personId, FeatureVector vector)
         {
-            // Do nothing - vectors are immutable
+            // No-op - we don't update feature vectors
         }
 
         public void UpdateIdentity(Guid personId, FeatureVector vector, int cameraId)
         {
-            UpdateMetadataOnly(personId, cameraId, null);
+            UpdateIdentityOnMatch(personId, cameraId, null);
         }
 
         public void SetDbId(Guid personId, int dbId)
         {
-            if (_identities.TryGetValue(personId, out var identity))
-            {
-                identity.DbId = dbId;
-            }
+            OnIdentitySavedToDatabase(personId, dbId);
         }
 
         public int GetDbId(Guid personId)
         {
-            return _identities.TryGetValue(personId, out var identity) ? identity.DbId : 0;
+            return _globalIdentities.TryGetValue(personId, out var identity) ? identity.DbId : 0;
         }
 
-        public int GetActiveIdentityCount() => _identities.Count;
-
         /// <summary>
-        /// Get confirmed unique person count (more reliable)
+        /// Total identities in memory
         /// </summary>
-        public int GetConfirmedIdentityCount()
-        {
-            return _identities.Values.Count(i => i.IsConfirmed);
-        }
+        public int GetActiveIdentityCount() => _globalIdentities.Count;
 
         /// <summary>
-        /// Get unique count for specific camera
+        /// Confirmed unique persons (more reliable count)
+        /// </summary>
+        public int GetConfirmedIdentityCount() => _confirmedPersons.Count;
+
+        /// <summary>
+        /// Get unique count for specific camera (persons seen on this camera)
         /// </summary>
         public int GetCameraIdentityCount(int cameraId)
         {
-            if (_cameraIdentities.TryGetValue(cameraId, out var ids))
-            {
-                return ids.Count(id => _identities.TryGetValue(id, out var i) && i.IsConfirmed);
-            }
-            return 0;
+            return _globalIdentities.Values
+                .Count(i => i.SeenOnCameras.Contains(cameraId) &&
+                           _confirmedPersons.ContainsKey(i.GlobalPersonId));
+        }
+
+        /// <summary>
+        /// Get total unique persons across ALL cameras (global count)
+        /// </summary>
+        public int GetGlobalUniqueCount()
+        {
+            return _confirmedPersons.Count;
+        }
+
+        /// <summary>
+        /// Get counts with quality breakdown
+        /// </summary>
+        public (int Total, int Confirmed, int HighConfidence) GetDetailedCounts()
+        {
+            var total = _globalIdentities.Count;
+            var confirmed = _confirmedPersons.Count;
+
+            // High confidence = confirmed AND seen on multiple cameras OR has many matches
+            var highConfidence = _globalIdentities.Values
+                .Count(i => _confirmedPersons.ContainsKey(i.GlobalPersonId) &&
+                           (i.SeenOnCameras.Count > 1 || i.MatchCount >= 5));
+
+            return (total, confirmed, highConfidence);
+        }
+
+        /// <summary>
+        /// Get persons currently active on a specific camera
+        /// </summary>
+        public int GetCurrentlyActiveCount(int cameraId)
+        {
+            if (!_cameraActivePersons.TryGetValue(cameraId, out var activeDict))
+                return 0;
+
+            var cutoff = DateTime.UtcNow.AddSeconds(-30);
+            return activeDict.Count(kvp => kvp.Value >= cutoff);
         }
 
         public void CleanupExpired(TimeSpan expirationTime)
         {
             var threshold = DateTime.UtcNow - expirationTime;
-            var expired = _identities
-                .Where(kvp => kvp.Value.LastSeen < threshold)
+
+            // Only cleanup in-memory identities that are NOT from database
+            var toRemove = _globalIdentities
+                .Where(kvp => !kvp.Value.IsFromDatabase && kvp.Value.LastSeen < threshold)
                 .Select(kvp => kvp.Key)
                 .ToList();
 
-            foreach (var id in expired)
+            foreach (var id in toRemove)
             {
-                if (_identities.TryRemove(id, out var identity))
+                _globalIdentities.TryRemove(id, out _);
+                _confirmedPersons.TryRemove(id, out _);
+            }
+
+            // Cleanup active tracking
+            foreach (var (camId, activeDict) in _cameraActivePersons)
+            {
+                var expiredActive = activeDict
+                    .Where(kvp => kvp.Value < threshold)
+                    .Select(kvp => kvp.Key)
+                    .ToList();
+
+                foreach (var id in expiredActive)
                 {
-                    if (_cameraIdentities.TryGetValue(identity.CameraId, out var camIds))
-                    {
-                        camIds.Remove(id);
-                    }
+                    activeDict.TryRemove(id, out _);
                 }
             }
 
-            if (expired.Count > 0)
+            if (toRemove.Count > 0)
             {
-                _logger.LogInformation("🧹 Cleaned up {Count} expired identities", expired.Count);
+                _logger.LogInformation("🧹 Cleaned up {Count} expired in-memory identities", toRemove.Count);
             }
         }
 
         public void ClearAllIdentities()
         {
-            var count = _identities.Count;
-            _identities.Clear();
-            _cameraIdentities.Clear();
+            var count = _globalIdentities.Count;
+            _globalIdentities.Clear();
+            _confirmedPersons.Clear();
+            _cameraActivePersons.Clear();
             _logger.LogWarning("🗑️ Cleared all {Count} identities", count);
         }
 
-        /// <summary>
-        /// Clear identities for specific camera only
-        /// </summary>
         public void ClearCameraIdentities(int cameraId)
         {
-            if (_cameraIdentities.TryRemove(cameraId, out var ids))
+            // Don't actually remove global identities, just clear active tracking
+            if (_cameraActivePersons.TryRemove(cameraId, out var removed))
             {
-                foreach (var id in ids)
-                {
-                    _identities.TryRemove(id, out _);
-                }
-                _logger.LogWarning("🗑️ Cleared {Count} identities for camera {Cam}", ids.Count, cameraId);
+                _logger.LogWarning("🗑️ Cleared active tracking for camera {Cam} ({Count} entries)",
+                    cameraId, removed.Count);
             }
+        }
+
+        /// <summary>
+        /// Reload identities from database (useful after bulk import)
+        /// </summary>
+        public async Task ReloadFromDatabaseAsync()
+        {
+            _isInitialized = false;
+            await InitializeFromDatabaseAsync();
+        }
+
+        /// <summary>
+        /// Get statistics for debugging
+        /// </summary>
+        public Dictionary<string, object> GetStatistics()
+        {
+            return new Dictionary<string, object>
+            {
+                ["TotalIdentities"] = _globalIdentities.Count,
+                ["ConfirmedIdentities"] = _confirmedPersons.Count,
+                ["FromDatabase"] = _globalIdentities.Values.Count(i => i.IsFromDatabase),
+                ["ActiveCameras"] = _cameraActivePersons.Count,
+                ["IsInitialized"] = _isInitialized
+            };
+        }
+
+        public int GetSessionUniqueCount()
+        {
+            return _sessionPersons.Count(kvp => kvp.Value >= _sessionStartTime);
+        }
+
+        // Add method to get today's count
+        /// <summary>
+        /// Get unique persons seen TODAY (since midnight) across ALL cameras
+        /// </summary>
+        public async Task<int> GetTodayUniqueCountAsync()
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+                var todayStart = DateTime.UtcNow.Date;
+
+                var count = await context.UniquePersons
+                    .Where(p => p.IsActive &&
+                               (p.FirstSeenAt >= todayStart || p.LastSeenAt >= todayStart))
+                    .CountAsync();
+
+                return count;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get today's unique count from database");
+
+                // Fallback to in-memory count for today
+                var todayStart = DateTime.UtcNow.Date;
+                return _globalIdentities.Values
+                    .Count(i => i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
+            }
+        }
+
+        /// <summary>
+        /// Get unique persons seen TODAY - synchronous version with caching
+        /// </summary>
+        private int _cachedTodayCount = 0;
+        private DateTime _lastTodayCountUpdate = DateTime.MinValue;
+        private readonly TimeSpan _todayCountCacheTime = TimeSpan.FromSeconds(10);
+
+        public int GetTodayUniqueCount()
+        {
+            // Cache the count to avoid hitting DB too often
+            if ((DateTime.UtcNow - _lastTodayCountUpdate) > _todayCountCacheTime)
+            {
+                try
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+                    var todayStart = DateTime.UtcNow.Date;
+
+                    _cachedTodayCount = context.UniquePersons
+                        .Where(p => p.IsActive &&
+                                   (p.FirstSeenAt >= todayStart || p.LastSeenAt >= todayStart))
+                        .Count();
+
+                    _lastTodayCountUpdate = DateTime.UtcNow;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to get today's count, using in-memory");
+
+                    var todayStart = DateTime.UtcNow.Date;
+                    _cachedTodayCount = _globalIdentities.Values
+                        .Count(i => i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
+                    _lastTodayCountUpdate = DateTime.UtcNow;
+                }
+            }
+
+            return _cachedTodayCount;
+        }
+
+
+        // Call this when starting a new session
+        public void StartNewSession()
+        {
+            _sessionStartTime = DateTime.UtcNow;
+            _sessionPersons.Clear();
+            _logger.LogWarning("🔄 New session started at {Time}", _sessionStartTime);
         }
     }
 

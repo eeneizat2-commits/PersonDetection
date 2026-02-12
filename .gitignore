@@ -374,3 +374,7 @@ FodyWeavers.xsd
 /PersonDetection/Models/yolov8n.onnx
 /PersonDetection/Models/yolov8s.onnx
 /PersonDetection/Models/osnet_x1_0.onnx.data
+/PersonDetection/Migrations/20260211153227_updateConfig2.cs
+/PersonDetection/Migrations/20260211163852_updateConfig3.cs
+/PersonDetection/Migrations/20260211153227_updateConfig2.Designer.cs
+/PersonDetection/Migrations/20260211163852_updateConfig3.Designer.cs

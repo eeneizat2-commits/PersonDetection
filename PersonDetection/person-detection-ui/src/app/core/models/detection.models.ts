@@ -15,6 +15,7 @@ export interface DetectionUpdate {
   cameraId: number;
   count: number;
   uniqueCount: number;  // Add this
+  todayUniqueCount: number;
   timestamp: Date;
   fps: number;
   persons: {
@@ -91,4 +92,11 @@ export interface CreateCameraRequest {
   url: string;
   description?: string;
   type?: CameraType;
+}
+
+export interface GlobalStats {
+    todayUniqueCount: number;
+    totalInMemory: number;
+    confirmedCount: number;
+    timestamp: Date;
 }

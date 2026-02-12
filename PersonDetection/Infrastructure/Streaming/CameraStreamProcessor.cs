@@ -498,16 +498,20 @@ namespace PersonDetection.Infrastructure.Streaming
                         // Strategy 2: Run Re-ID for identity verification/creation
                         // In DetectionLoop method, update the ReID section:
 
+                        // In DetectionLoop, update the ReID section:
                         if (shouldRunReId)
                         {
                             try
                             {
-                                // Check minimum crop size before running ReID
-                                if (detection.BoundingBox.Width < 48 || detection.BoundingBox.Height < 96)
+                                // More lenient crop size check - allow smaller crops
+                                var minArea = 24 * 48; // 1152 pixels minimum
+                                var cropArea = detection.BoundingBox.Width * detection.BoundingBox.Height;
+
+                                if (cropArea < minArea)
                                 {
-                                    _logger.LogDebug("📏 Skipping ReID - crop too small: {W}x{H}",
-                                        detection.BoundingBox.Width, detection.BoundingBox.Height);
-                                    // Fall through to spatial matching
+                                    _logger.LogDebug("📏 Skipping ReID - crop too small: {W}x{H} (area={Area})",
+                                        detection.BoundingBox.Width, detection.BoundingBox.Height, cropArea);
+                                    // Don't skip - fall through to spatial matching
                                 }
                                 else
                                 {
@@ -517,11 +521,9 @@ namespace PersonDetection.Infrastructure.Streaming
 
                                     tracked.Features = featureVector.Values;
 
-                                    // Get or create identity with spatial context
                                     var reidId = _identityMatcher.GetOrCreateIdentity(
                                         featureVector, _cameraId, detection.BoundingBox);
 
-                                    // If Guid.Empty returned, ReID declined - use spatial tracking
                                     if (reidId != Guid.Empty)
                                     {
                                         if (resolvedId == Guid.Empty || resolvedId != reidId)
@@ -623,10 +625,19 @@ namespace PersonDetection.Infrastructure.Streaming
                         }
                     }
 
+                    //lock (_detectionLock)
+                    //{
+                    //    _currentTrackedPersons = trackedPersons;
+
+                    //    // Use GLOBAL unique count, not per-camera
+                    //    _uniquePersonCount = _identityMatcher.GetConfirmedIdentityCount();
+                    //}
+
+                    // OR if you want per-camera count:
                     lock (_detectionLock)
                     {
                         _currentTrackedPersons = trackedPersons;
-                        _uniquePersonCount = _seenPersonIds.Count;
+                        _uniquePersonCount = _identityMatcher.GetCameraIdentityCount(_cameraId);
                     }
 
                     await NotifyClientsAsync(trackedPersons);
@@ -808,6 +819,8 @@ namespace PersonDetection.Infrastructure.Streaming
         {
             var yellow = new Scalar(0, 255, 255);
             var white = new Scalar(255, 255, 255);
+            var green = new Scalar(0, 255, 0);
+            var cyan = new Scalar(255, 255, 0);
             var black = new Scalar(0, 0, 0);
             var font = HersheyFonts.HersheySimplex;
             var rand = new Random(42);
@@ -828,11 +841,24 @@ namespace PersonDetection.Infrastructure.Streaming
                 Cv2.PutText(frame, label, labelPos, font, 0.4, black, 1, LineTypes.AntiAlias);
             }
 
-            Cv2.Rectangle(frame, new Rect(5, 5, 180, 55), new Scalar(0, 0, 0, 200), -1);
-            Cv2.PutText(frame, $"Current: {persons.Count} | Unique: {_uniquePersonCount}",
-                new CvPoint(10, 25), font, 0.5, yellow, 1);
+            // Get counts
+            var currentCount = persons.Count;
+            var todayUnique = _identityMatcher.GetTodayUniqueCount();  // NEW: Today's count
+
+            // Draw info box - simplified with TODAY's count
+            Cv2.Rectangle(frame, new Rect(5, 5, 180, 65), new Scalar(0, 0, 0, 200), -1);
+
+            // Line 1: Current detections
+            Cv2.PutText(frame, $"Current: {currentCount}",
+                new CvPoint(10, 20), font, 0.50, yellow, 1);
+
+            // Line 2: Unique Today (THE MAIN NUMBER)
+            Cv2.PutText(frame, $"Unique Today: {todayUnique}",
+                new CvPoint(10, 42), font, 0.55, green, 1);  // Larger and green for emphasis
+
+            // Line 3: Time and FPS
             Cv2.PutText(frame, $"{DateTime.Now:HH:mm:ss} | {_currentFps:F0} FPS",
-                new CvPoint(10, 45), font, 0.4, white, 1);
+                new CvPoint(10, 60), font, 0.40, white, 1);
         }
 
         private void DrawCornerBox(Mat frame, int x, int y, int w, int h, Scalar color, int t, int len)
@@ -849,18 +875,21 @@ namespace PersonDetection.Infrastructure.Streaming
             Cv2.Line(frame, new CvPoint(x2, y2), new CvPoint(x2, y2 - len), color, t);
         }
 
-        private async Task NotifyClientsAsync(List<TrackedPerson> persons)
+        private async Task NotifyClientsAsync(List<TrackedPerson> trackedPersons)
         {
             try
             {
+                var todayUnique = _identityMatcher.GetTodayUniqueCount();
+
                 var update = new
                 {
-                    cameraId = _cameraId,           // Use camelCase explicitly
-                    count = persons.Count,
+                    cameraId = _cameraId,
+                    count = trackedPersons.Count,
                     uniqueCount = _uniquePersonCount,
+                    todayUniqueCount = todayUnique,  // NEW
                     timestamp = DateTime.UtcNow,
                     fps = _currentFps,
-                    persons = persons.Select(p => new
+                    persons = trackedPersons.Select(p => new
                     {
                         id = p.GlobalPersonId.ToString()[..8],
                         confidence = p.Confidence,

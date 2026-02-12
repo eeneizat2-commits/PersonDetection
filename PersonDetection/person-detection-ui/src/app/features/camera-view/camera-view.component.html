@@ -12,7 +12,7 @@
             <mat-icon>person</mat-icon>
             <span>{{ currentDetection.count }} persons</span>
             <span class="separator">|</span>
-            <span>{{ currentDetection.uniqueCount }} unique</span>
+            <span class="unique-highlight">{{ currentDetection.todayUniqueCount }} unique today</span>
         </div>
         }
 
@@ -40,9 +40,13 @@
                     <mat-icon>people</mat-icon>
                     <span>{{ currentDetection.count }} Persons Detected</span>
                 </div>
-                <div class="info-row">
+                <div class="info-row highlight">
                     <mat-icon>fingerprint</mat-icon>
-                    <span>{{ currentDetection.uniqueCount }} Unique Today</span>
+                    <span>{{ currentDetection.todayUniqueCount }} Unique Today</span>
+                </div>
+                <div class="info-row secondary">
+                    <mat-icon>videocam</mat-icon>
+                    <span>{{ currentDetection.uniqueCount }} This Camera</span>
                 </div>
                 <div class="info-row">
                     <mat-icon>speed</mat-icon>

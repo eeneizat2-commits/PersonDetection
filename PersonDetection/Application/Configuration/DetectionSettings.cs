@@ -16,24 +16,43 @@ namespace PersonDetection.Application.Configuration
     }
 
     // In DetectionSettings.cs
+    // In DetectionSettings.cs
     public class IdentitySettings
     {
         public const string SectionName = "IdentityConfig";
 
-        public float DistanceThreshold { get; set; } = 0.25f;
-        public float MinDistanceForNewIdentity { get; set; } = 0.08f;  // NEW: Min dist to create new
-        public float SimilarityThreshold { get; set; } = 0.80f;
-        public float MinSeparationRatio { get; set; } = 1.3f;         // Relaxed from 1.5
-        public int CacheExpirationMinutes { get; set; } = 5;          // Shorter expiration
+        // Matching thresholds
+        public float DistanceThreshold { get; set; } = 0.30f;
+        public float MinDistanceForNewIdentity { get; set; } = 0.10f;
+        public float GlobalMatchThreshold { get; set; } = 0.25f;  // Stricter for cross-camera
+        public float SimilarityThreshold { get; set; } = 0.75f;
+        public float MinSeparationRatio { get; set; } = 1.25f;
+
+        // Cache settings
+        public int CacheExpirationMinutes { get; set; } = 60;
+        public int MaxIdentitiesInMemory { get; set; } = 500;
+
+        // Feature vector settings
         public bool UpdateVectorOnMatch { get; set; } = false;
         public bool UseAdaptiveThreshold { get; set; } = false;
         public bool RequireMinimumSeparation { get; set; } = true;
-        public int MaxIdentitiesPerCamera { get; set; } = 50;         // NEW: Limit identities
-        public int MinCropWidth { get; set; } = 48;                   // NEW: Min size for ReID
-        public int MinCropHeight { get; set; } = 96;                  // NEW: Min size for ReID
-        public bool EnableIdentityConsolidation { get; set; } = true; // NEW: Merge similar
-        public float ConsolidationThreshold { get; set; } = 0.06f;    // NEW: Merge if closer than this
-        public int TemporalWindowSeconds { get; set; } = 30;          // NEW: Time window
+
+        // Crop size for ReID
+        public int MinCropWidth { get; set; } = 32;
+        public int MinCropHeight { get; set; } = 64;
+
+        // GLOBAL cross-camera matching
+        public bool EnableGlobalMatching { get; set; } = true;
+        public bool LoadFromDatabaseOnStartup { get; set; } = true;
+        public int DatabaseLoadHours { get; set; } = 24;  // Load persons from last 24 hours
+
+        // Consolidation
+        public bool EnableIdentityConsolidation { get; set; } = true;
+        public float ConsolidationThreshold { get; set; } = 0.08f;
+
+        // Confirmation
+        public int ConfirmationMatchCount { get; set; } = 2;
+        public bool AmbiguousMatchAsConfirmed { get; set; } = false;
     }
 
     public class TrackingSettings
