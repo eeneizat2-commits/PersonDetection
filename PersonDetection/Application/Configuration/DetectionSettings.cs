@@ -84,7 +84,7 @@ namespace PersonDetection.Application.Configuration
         /// <summary>
         /// Number of consecutive frames needed to change identity
         /// </summary>
-        public int MatchStabilityFrames { get; set; } = 3;
+        public int MatchStabilityFrames { get; set; } = 2;
 
         // ═══════════════════════════════════════════════════════════════
         // FAST WALKER CONFIRMATION
@@ -124,6 +124,12 @@ namespace PersonDetection.Application.Configuration
         // ═══════════════════════════════════════════════════════════════
         public bool EnableIdentityConsolidation { get; set; } = false;
         public float ConsolidationThreshold { get; set; } = 0.10f;
+
+        /// <summary>
+        /// Confidence threshold for INSTANT confirmation (single frame)
+        /// Any detection above this = immediately confirmed as unique
+        /// </summary>
+        public float InstantConfirmConfidence { get; set; } = 0.40f;
     }
 
     public class StreamingSettings

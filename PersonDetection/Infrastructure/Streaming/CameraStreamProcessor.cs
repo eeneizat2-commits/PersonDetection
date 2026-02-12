@@ -616,23 +616,23 @@ namespace PersonDetection.Infrastructure.Streaming
                             pending.HasFeatures |= (tracked.Features != null);
                             pending.MaxConfidence = Math.Max(pending.MaxConfidence, detection.Confidence);
 
-                            // ★★★ KEY FIX: Relaxed confirmation logic ★★★
+                            // ★★★ RELAXED: Much easier confirmation ★★★
                             bool shouldConfirm = false;
 
-                            // Method 1: Standard frame count (reduced to 2)
-                            if (pending.FrameCount >= RequiredConfirmationFrames && pending.HasFeatures)
+                            // Method 1: Single frame with any features
+                            if (pending.HasFeatures)
                             {
                                 shouldConfirm = true;
                             }
 
-                            // Method 2: High confidence fast-track (2 frames with >55% confidence)
-                            if (pending.FrameCount >= 2 && pending.MaxConfidence >= 0.55f)
+                            // Method 2: Single frame with decent confidence (no features required)
+                            if (detection.Confidence >= 0.40f)
                             {
                                 shouldConfirm = true;
                             }
 
-                            // Method 3: Very high confidence (1 frame with >75% + features)
-                            if (detection.Confidence >= 0.75f && tracked.Features != null)
+                            // Method 3: 2 frames regardless of features/confidence
+                            if (pending.FrameCount >= 2)
                             {
                                 shouldConfirm = true;
                             }
@@ -644,11 +644,10 @@ namespace PersonDetection.Infrastructure.Streaming
                                 tracked.IsNew = true;
 
                                 _logger.LogInformation(
-                                    "✅ CONFIRMED: {Id} (frames={F}, conf={C:P0}, features={Feat})",
+                                    "✅ CONFIRMED: {Id} (frames={F}, conf={C:P0})",
                                     tracked.GlobalPersonId.ToString()[..8],
                                     pending.FrameCount,
-                                    pending.MaxConfidence,
-                                    pending.HasFeatures);
+                                    pending.MaxConfidence);
                             }
                         }
 

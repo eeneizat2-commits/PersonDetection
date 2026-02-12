@@ -15,11 +15,7 @@ namespace PersonDetection.Infrastructure.Identity
         private readonly ConcurrentDictionary<Guid, PersonIdentity> _globalIdentities = new();
         private readonly ConcurrentDictionary<int, ConcurrentDictionary<Guid, DateTime>> _cameraActivePersons = new();
         private readonly ConcurrentDictionary<Guid, bool> _confirmedPersons = new();
-
-        // NEW: Track match stability to prevent ID flipping
         private readonly ConcurrentDictionary<int, MatchStabilityTracker> _trackStability = new();
-
-        // NEW: Track entry detections
         private readonly ConcurrentDictionary<Guid, EntryInfo> _entryTracking = new();
 
         private readonly IServiceProvider _serviceProvider;
@@ -31,7 +27,6 @@ namespace PersonDetection.Infrastructure.Identity
         private DateTime _sessionStartTime = DateTime.UtcNow;
         private readonly ConcurrentDictionary<Guid, DateTime> _sessionPersons = new();
 
-        // Frame dimensions for entry zone calculation
         private int _frameWidth = 1280;
         private int _frameHeight = 720;
 
@@ -54,8 +49,6 @@ namespace PersonDetection.Infrastructure.Identity
             public float MaxConfidence { get; set; } = 0f;
             public int HighConfidenceCount { get; set; } = 0;
             public bool IsConfirmedByConfidence { get; set; } = false;
-
-            // NEW: Activity tracking
             public DateTime LastActiveTime { get; set; }
             public bool IsCurrentlyActive => (DateTime.UtcNow - LastActiveTime).TotalSeconds < 60;
         }
@@ -108,28 +101,24 @@ namespace PersonDetection.Infrastructure.Identity
         private void LogSettings()
         {
             _logger.LogWarning(
-                "🚀 PersonIdentityService Configuration:\n" +
-                "   ├─ Distance Thresholds: Same={Same:F2}, Global={Global:F2}, MinNew={MinNew:F2}\n" +
-                "   ├─ Temporal: Enabled={TempEnabled}, ActiveSec={ActiveSec}, RecentMin={RecentMin}, Penalty={Penalty:F2}\n" +
-                "   ├─ Entry Zone: Enabled={EntryEnabled}, Margin={Margin}%, Bonus={Bonus:F2}\n" +
-                "   ├─ Stability: Frames={StabFrames}\n" +
-                "   ├─ Fast Walker: Enabled={FastEnabled}, MinConf={MinConf:P0}, MinDetect={MinDetect}\n" +
-                "   └─ DB Load: Hours={DbHours}",
+                "🚀 RELAXED PersonIdentityService:\n" +
+                "   ├─ Thresholds: Same={Same:F2}, Global={Global:F2}, MinNew={MinNew:F2}\n" +
+                "   ├─ Confirmation: Count={ConfCount}, MinConf={MinConf:P0}, InstantConf={Instant:P0}\n" +
+                "   ├─ Temporal: Penalty={Penalty:F2}, ActiveSec={Active}, RecentMin={Recent}\n" +
+                "   ├─ Entry Zone: Margin={Margin}%, Bonus={Bonus:F2}\n" +
+                "   └─ Stability: Frames={Frames}",
                 _settings.DistanceThreshold,
                 _settings.GlobalMatchThreshold,
                 _settings.MinDistanceForNewIdentity,
-                _settings.EnableTemporalMatching,
+                _settings.ConfirmationMatchCount,
+                _settings.MinConfidenceForConfirmation,
+                _settings.InstantConfirmConfidence,
+                _settings.PenaltyForStaleMatch,
                 _settings.MaxSecondsForActiveMatch,
                 _settings.MaxMinutesForRecentMatch,
-                _settings.PenaltyForStaleMatch,
-                _settings.EnableEntryZoneDetection,
                 _settings.EntryZoneMarginPercent,
                 _settings.NewPersonBonusDistance,
-                _settings.MatchStabilityFrames,
-                _settings.EnableFastWalkerMode,
-                _settings.MinConfidenceForConfirmation,
-                _settings.MinHighConfidenceDetections,
-                _settings.DatabaseLoadHours);
+                _settings.MatchStabilityFrames);
         }
 
         public PersonIdentityService(
@@ -165,7 +154,7 @@ namespace PersonDetection.Infrastructure.Identity
 
                 var persons = await context.UniquePersons
                     .Where(p => p.IsActive && p.LastSeenAt >= cutoff)
-                    .OrderByDescending(p => p.LastSeenAt) // Prioritize recently seen
+                    .OrderByDescending(p => p.LastSeenAt)
                     .ThenByDescending(p => p.TotalSightings)
                     .Take(_settings.MaxIdentitiesInMemory)
                     .ToListAsync();
@@ -237,7 +226,7 @@ namespace PersonDetection.Infrastructure.Identity
             => GetOrCreateIdentity(vector, cameraId, boundingBox, detectionConfidence, 0);
 
         /// <summary>
-        /// Main entry point with full tracking support
+        /// Main entry point - RELAXED version for maximum unique detection
         /// </summary>
         public Guid GetOrCreateIdentity(
             FeatureVector vector,
@@ -246,10 +235,11 @@ namespace PersonDetection.Infrastructure.Identity
             float detectionConfidence,
             int trackId)
         {
-            // Validate inputs
+            // RELAXED: Very lenient size check
             if (boundingBox != null && !IsSufficientSizeForReId(boundingBox))
             {
-                if (!(_settings.EnableFastWalkerMode && detectionConfidence >= _settings.MinConfidenceForConfirmation))
+                // Still allow if confidence is reasonable
+                if (detectionConfidence < 0.25f)
                 {
                     return Guid.Empty;
                 }
@@ -260,14 +250,14 @@ namespace PersonDetection.Infrastructure.Identity
                 return Guid.Empty;
             }
 
-            // Check if person is in entry zone (likely NEW person)
+            // Check if person is in entry zone
             bool isInEntryZone = IsInEntryZone(boundingBox);
 
-            // Try to match
-            var matchResult = TryMatchWithTemporalAwareness(vector, cameraId, boundingBox, isInEntryZone);
+            // Try to match against ACTIVE identities only
+            var matchResult = TryMatchRelaxed(vector, cameraId, boundingBox, isInEntryZone, detectionConfidence);
 
-            // Apply match stability
-            var stableMatchId = ApplyMatchStability(trackId, matchResult, cameraId);
+            // RELAXED: Minimal stability requirement
+            var stableMatchId = ApplyMinimalStability(trackId, matchResult, cameraId);
 
             if (stableMatchId != Guid.Empty)
             {
@@ -276,8 +266,8 @@ namespace PersonDetection.Infrastructure.Identity
                 return stableMatchId;
             }
 
-            // Create new identity
-            var newId = CreateNewIdentity(vector, cameraId, boundingBox, detectionConfidence, isInEntryZone);
+            // Create new identity - ALWAYS confirm immediately if confidence is OK
+            var newId = CreateNewIdentityRelaxed(vector, cameraId, boundingBox, detectionConfidence, isInEntryZone);
             TrackActiveOnCamera(newId, cameraId);
 
             return newId;
@@ -285,14 +275,15 @@ namespace PersonDetection.Infrastructure.Identity
 
         #endregion
 
-        #region Core Matching Logic
+        #region RELAXED Matching Logic
 
         private (bool IsMatch, Guid PersonId, float BestDistance, bool IsAmbiguous, bool IsStale)
-            TryMatchWithTemporalAwareness(
+            TryMatchRelaxed(
                 FeatureVector vector,
                 int cameraId,
                 BoundingBox? boundingBox,
-                bool isInEntryZone)
+                bool isInEntryZone,
+                float detectionConfidence)
         {
             if (_globalIdentities.IsEmpty)
             {
@@ -301,14 +292,25 @@ namespace PersonDetection.Infrastructure.Identity
 
             var now = DateTime.UtcNow;
 
-            // Calculate distances with temporal penalties
-            var matches = _globalIdentities.Values
+            // RELAXED: Only match against RECENTLY ACTIVE identities
+            var activeIdentities = _globalIdentities.Values
+                .Where(i => (now - i.LastActiveTime).TotalMinutes <= _settings.MaxMinutesForRecentMatch)
+                .ToList();
+
+            if (activeIdentities.Count == 0)
+            {
+                _logger.LogDebug("🆕 No active identities to match - will create new");
+                return (false, Guid.Empty, float.MaxValue, false, false);
+            }
+
+            // Calculate distances
+            var matches = activeIdentities
                 .Select(identity =>
                 {
                     var storedVector = new FeatureVector(identity.FeatureVector);
                     var rawDistance = vector.EuclideanDistance(storedVector);
 
-                    // Calculate temporal penalty
+                    // RELAXED: Smaller temporal penalty
                     float temporalPenalty = 0f;
                     bool isStale = false;
 
@@ -318,19 +320,10 @@ namespace PersonDetection.Infrastructure.Identity
 
                         if (timeSinceLastSeen.TotalSeconds > _settings.MaxSecondsForActiveMatch)
                         {
-                            if (timeSinceLastSeen.TotalMinutes > _settings.MaxMinutesForRecentMatch)
-                            {
-                                // Stale - apply full penalty
-                                temporalPenalty = _settings.PenaltyForStaleMatch;
-                                isStale = true;
-                            }
-                            else
-                            {
-                                // Recent but not active - apply partial penalty
-                                var minutesPassed = (float)timeSinceLastSeen.TotalMinutes;
-                                var penaltyRatio = minutesPassed / _settings.MaxMinutesForRecentMatch;
-                                temporalPenalty = _settings.PenaltyForStaleMatch * penaltyRatio * 0.5f;
-                            }
+                            var minutesPassed = (float)timeSinceLastSeen.TotalMinutes;
+                            var penaltyRatio = Math.Min(1f, minutesPassed / _settings.MaxMinutesForRecentMatch);
+                            temporalPenalty = _settings.PenaltyForStaleMatch * penaltyRatio;
+                            isStale = timeSinceLastSeen.TotalMinutes > _settings.MaxMinutesForRecentMatch;
                         }
                     }
 
@@ -346,36 +339,34 @@ namespace PersonDetection.Infrastructure.Identity
                     };
                 })
                 .OrderBy(m => m.AdjustedDistance)
-                .Take(5)
+                .Take(3)
                 .ToList();
 
             if (matches.Count == 0)
                 return (false, Guid.Empty, float.MaxValue, false, false);
 
             var best = matches[0];
-            var secondBest = matches.Count > 1 ? matches[1] : null;
 
-            // Determine threshold
-            bool isCrossCamera = cameraId > 0 && best.Identity.LastCameraId != cameraId;
-            float threshold = isCrossCamera ? _settings.GlobalMatchThreshold : _settings.DistanceThreshold;
+            // RELAXED: Use wider threshold
+            float threshold = _settings.DistanceThreshold;
 
-            // If person is in entry zone, make it harder to match (they're probably NEW)
+            // Entry zone: Make threshold STRICTER (harder to match = more new identities)
             if (isInEntryZone && _settings.EnableEntryZoneDetection)
             {
                 threshold -= _settings.NewPersonBonusDistance;
-                _logger.LogDebug("🚪 Entry zone detected - threshold reduced to {Thresh:F3}", threshold);
             }
 
-            // Log match attempt
-            _logger.LogInformation(
-                "{Status} Match: {Id} raw={Raw:F3} adj={Adj:F3} (thresh={Thresh:F3}, stale={Stale}, entry={Entry})",
-                best.AdjustedDistance <= threshold ? "✅" : "❌",
-                best.Identity.GlobalPersonId.ToString()[..8],
-                best.RawDistance,
-                best.AdjustedDistance,
-                threshold,
-                best.IsStale,
-                isInEntryZone);
+            // High confidence detection: Also make threshold stricter
+            if (detectionConfidence >= 0.60f)
+            {
+                threshold -= 0.05f;
+            }
+
+            // Log
+            var status = best.AdjustedDistance <= threshold ? "✅" : "🆕";
+            _logger.LogDebug(
+                "{Status} raw={Raw:F3} adj={Adj:F3} thresh={Thresh:F3} entry={Entry}",
+                status, best.RawDistance, best.AdjustedDistance, threshold, isInEntryZone);
 
             // Must be below threshold
             if (best.AdjustedDistance > threshold)
@@ -383,62 +374,35 @@ namespace PersonDetection.Infrastructure.Identity
                 return (false, Guid.Empty, best.RawDistance, false, best.IsStale);
             }
 
-            // Check for required recent activity
-            if (_settings.RequireRecentActivityForMatch && best.IsStale)
+            // RELAXED: Skip stale matches entirely - create new instead
+            if (best.IsStale)
             {
-                _logger.LogInformation(
-                    "⏰ Rejecting stale match to {Id} (last seen {Min:F1} min ago)",
-                    best.Identity.GlobalPersonId.ToString()[..8],
-                    best.TimeSinceLastSeen.TotalMinutes);
+                _logger.LogDebug("⏰ Skipping stale match - creating new identity");
                 return (false, Guid.Empty, best.RawDistance, false, true);
             }
 
-            // Check ambiguity
-            bool isAmbiguous = false;
-            if (secondBest != null && secondBest.AdjustedDistance < threshold)
-            {
-                var ratio = secondBest.AdjustedDistance / Math.Max(best.AdjustedDistance, 0.001f);
-                if (ratio < _settings.MinSeparationRatio)
-                {
-                    isAmbiguous = true;
-
-                    // Still accept if raw distance is very small
-                    if (best.RawDistance > _settings.MinDistanceForNewIdentity)
-                    {
-                        _logger.LogInformation(
-                            "⚠️ Ambiguous match rejected: {Id} vs {Id2}",
-                            best.Identity.GlobalPersonId.ToString()[..8],
-                            secondBest.Identity.GlobalPersonId.ToString()[..8]);
-                        return (false, Guid.Empty, best.RawDistance, true, best.IsStale);
-                    }
-                }
-            }
-
-            // Force new identity if in entry zone and match is not very strong
-            if (isInEntryZone && best.RawDistance > _settings.MinDistanceForNewIdentity * 1.5f)
-            {
-                _logger.LogInformation(
-                    "🚪 Entry zone: Creating new identity instead of weak match to {Id}",
-                    best.Identity.GlobalPersonId.ToString()[..8]);
-                return (false, Guid.Empty, best.RawDistance, false, false);
-            }
-
-            return (true, best.Identity.GlobalPersonId, best.RawDistance, isAmbiguous, best.IsStale);
+            return (true, best.Identity.GlobalPersonId, best.RawDistance, false, false);
         }
 
         /// <summary>
-        /// Apply match stability to prevent ID flipping
+        /// RELAXED: Minimal stability - just 1 frame
         /// </summary>
-        private Guid ApplyMatchStability(int trackId,
+        private Guid ApplyMinimalStability(int trackId,
             (bool IsMatch, Guid PersonId, float BestDistance, bool IsAmbiguous, bool IsStale) matchResult,
             int cameraId)
         {
-            if (trackId <= 0 || _settings.MatchStabilityFrames <= 1)
+            // RELAXED: Immediate return for stability frames = 1
+            if (_settings.MatchStabilityFrames <= 1)
             {
                 return matchResult.IsMatch ? matchResult.PersonId : Guid.Empty;
             }
 
-            var key = trackId + (cameraId * 10000); // Unique per camera
+            if (trackId <= 0)
+            {
+                return matchResult.IsMatch ? matchResult.PersonId : Guid.Empty;
+            }
+
+            var key = trackId + (cameraId * 10000);
 
             if (!_trackStability.TryGetValue(key, out var tracker))
             {
@@ -453,8 +417,8 @@ namespace PersonDetection.Infrastructure.Identity
                 return matchResult.IsMatch ? matchResult.PersonId : Guid.Empty;
             }
 
-            // Reset if too much time passed
-            if ((DateTime.UtcNow - tracker.LastUpdate).TotalSeconds > 2)
+            // Reset if time passed
+            if ((DateTime.UtcNow - tracker.LastUpdate).TotalSeconds > 1)
             {
                 tracker.CurrentMatchId = matchResult.PersonId;
                 tracker.PendingMatchId = Guid.Empty;
@@ -465,48 +429,24 @@ namespace PersonDetection.Infrastructure.Identity
 
             var newMatchId = matchResult.IsMatch ? matchResult.PersonId : Guid.Empty;
 
-            // If same as current, return it
             if (newMatchId == tracker.CurrentMatchId)
             {
-                tracker.PendingMatchId = Guid.Empty;
-                tracker.PendingMatchCount = 0;
                 return tracker.CurrentMatchId;
             }
 
-            // Different match - start counting
-            if (newMatchId == tracker.PendingMatchId)
-            {
-                tracker.PendingMatchCount++;
-
-                if (tracker.PendingMatchCount >= _settings.MatchStabilityFrames)
-                {
-                    _logger.LogInformation(
-                        "🔄 Stable ID change: {Old} → {New} after {Frames} frames",
-                        tracker.CurrentMatchId.ToString()[..8],
-                        newMatchId == Guid.Empty ? "NEW" : newMatchId.ToString()[..8],
-                        tracker.PendingMatchCount);
-
-                    tracker.CurrentMatchId = newMatchId;
-                    tracker.PendingMatchId = Guid.Empty;
-                    tracker.PendingMatchCount = 0;
-                    return newMatchId;
-                }
-            }
-            else
-            {
-                tracker.PendingMatchId = newMatchId;
-                tracker.PendingMatchCount = 1;
-            }
-
-            // Return current stable match
-            return tracker.CurrentMatchId;
+            // RELAXED: Accept change after just 1-2 frames
+            tracker.CurrentMatchId = newMatchId;
+            return newMatchId;
         }
 
         #endregion
 
-        #region Identity Management
+        #region RELAXED Identity Creation
 
-        private Guid CreateNewIdentity(
+        /// <summary>
+        /// RELAXED: Create and IMMEDIATELY confirm new identities
+        /// </summary>
+        private Guid CreateNewIdentityRelaxed(
             FeatureVector vector,
             int cameraId,
             BoundingBox? boundingBox,
@@ -554,7 +494,6 @@ namespace PersonDetection.Infrastructure.Identity
 
             _globalIdentities[newId] = identity;
 
-            // Track entry info
             if (isFromEntryZone)
             {
                 _entryTracking[newId] = new EntryInfo
@@ -565,20 +504,34 @@ namespace PersonDetection.Infrastructure.Identity
                 };
             }
 
-            // Auto-confirm high confidence new detections in fast walker mode
-            if (_settings.EnableFastWalkerMode && confidence >= 0.70f)
+            // ★★★ RELAXED: INSTANT CONFIRMATION ★★★
+            // Confirm immediately if confidence meets threshold
+            float instantThreshold = _settings.InstantConfirmConfidence > 0
+                ? _settings.InstantConfirmConfidence
+                : 0.40f;
+
+            if (confidence >= instantThreshold)
             {
                 _confirmedPersons[newId] = true;
                 identity.IsConfirmedByConfidence = true;
-                _logger.LogWarning(
-                    "🆕⚡ NEW CONFIRMED (high-conf): {Id} on cam{Cam} conf={Conf:P0}",
+                _logger.LogInformation(
+                    "🆕✅ INSTANT CONFIRMED: {Id} cam={Cam} conf={Conf:P0}",
+                    newId.ToString()[..8], cameraId, confidence);
+            }
+            else if (confidence >= _settings.MinConfidenceForConfirmation)
+            {
+                // Still confirm if above min threshold
+                _confirmedPersons[newId] = true;
+                identity.IsConfirmedByConfidence = true;
+                _logger.LogInformation(
+                    "🆕✅ CONFIRMED: {Id} cam={Cam} conf={Conf:P0}",
                     newId.ToString()[..8], cameraId, confidence);
             }
             else
             {
-                _logger.LogInformation(
-                    "🆕 NEW: {Id} on cam{Cam} (entry={Entry}, total={Total})",
-                    newId.ToString()[..8], cameraId, isFromEntryZone, _globalIdentities.Count);
+                _logger.LogDebug(
+                    "🆕 NEW (pending): {Id} cam={Cam} conf={Conf:P0}",
+                    newId.ToString()[..8], cameraId, confidence);
             }
 
             return newId;
@@ -605,7 +558,6 @@ namespace PersonDetection.Infrastructure.Identity
                 identity.SeenOnCameras.Add(cameraId);
             }
 
-            // Confidence tracking
             if (confidence > 0)
             {
                 identity.MaxConfidence = Math.Max(identity.MaxConfidence, confidence);
@@ -616,7 +568,6 @@ namespace PersonDetection.Infrastructure.Identity
                     CameraId = cameraId
                 });
 
-                // Cleanup old records
                 var windowStart = now.AddSeconds(-_settings.FastWalkerTimeWindowSeconds);
                 identity.ConfidenceHistory.RemoveAll(r => r.Timestamp < windowStart);
 
@@ -626,39 +577,11 @@ namespace PersonDetection.Infrastructure.Identity
                 }
             }
 
-            // Confirmation logic
-            bool shouldConfirm = false;
-
-            // Method 1: Match count
-            if (identity.MatchCount >= _settings.ConfirmationMatchCount)
-            {
-                shouldConfirm = true;
-            }
-
-            // Method 2: High confidence detections
-            if (_settings.EnableConfidenceBasedConfirmation)
-            {
-                var recentHighConf = identity.ConfidenceHistory
-                    .Count(r => r.Confidence >= _settings.MinConfidenceForConfirmation);
-
-                if (recentHighConf >= _settings.MinHighConfidenceDetections)
-                {
-                    shouldConfirm = true;
-                    identity.IsConfirmedByConfidence = true;
-                }
-            }
-
-            // Method 3: Fast walker single high confidence
-            if (_settings.EnableFastWalkerMode && confidence >= 0.75f && identity.MatchCount >= 2)
-            {
-                shouldConfirm = true;
-            }
-
-            if (shouldConfirm && !_confirmedPersons.ContainsKey(personId))
+            // RELAXED: Confirm on ANY match
+            if (!_confirmedPersons.ContainsKey(personId))
             {
                 _confirmedPersons[personId] = true;
-                _logger.LogInformation("✅ CONFIRMED: {Id} (matches={M}, conf={C:P0})",
-                    personId.ToString()[..8], identity.MatchCount, confidence);
+                _logger.LogInformation("✅ CONFIRMED on match: {Id}", personId.ToString()[..8]);
             }
         }
 
@@ -677,7 +600,6 @@ namespace PersonDetection.Infrastructure.Identity
             var centerX = box.X + box.Width / 2f;
             var centerY = box.Y + box.Height / 2f;
 
-            // Check if center is near any edge
             bool nearLeft = centerX < marginX;
             bool nearRight = centerX > (_frameWidth - marginX);
             bool nearTop = centerY < marginY;
@@ -688,10 +610,11 @@ namespace PersonDetection.Infrastructure.Identity
 
         private bool IsSufficientSizeForReId(BoundingBox box)
         {
+            // RELAXED: Very permissive size check
             var minArea = _settings.MinCropWidth * _settings.MinCropHeight;
             var cropArea = box.Width * box.Height;
-            return cropArea >= (minArea * 0.6) ||
-                   (box.Width >= _settings.MinCropWidth && box.Height >= _settings.MinCropHeight);
+            return cropArea >= (minArea * 0.4) ||
+                   (box.Width >= _settings.MinCropWidth * 0.7 && box.Height >= _settings.MinCropHeight * 0.7);
         }
 
         private bool IsValidFeatureVector(FeatureVector vector)
@@ -702,7 +625,7 @@ namespace PersonDetection.Infrastructure.Identity
             if (values.Any(v => float.IsNaN(v) || float.IsInfinity(v)))
                 return false;
             var variance = values.Select(v => v * v).Average() - Math.Pow(values.Average(), 2);
-            return variance >= 0.00001f;
+            return variance >= 0.000001f; // RELAXED
         }
 
         private void TrackActiveOnCamera(Guid personId, int cameraId)
@@ -734,7 +657,7 @@ namespace PersonDetection.Infrastructure.Identity
 
         public bool TryMatch(FeatureVector vector, out Guid personId, out float similarity)
         {
-            var result = TryMatchWithTemporalAwareness(vector, 0, null, false);
+            var result = TryMatchRelaxed(vector, 0, null, false, 0.5f);
             personId = result.PersonId;
             similarity = 1f / (1f + result.BestDistance);
             return result.IsMatch;
@@ -768,7 +691,7 @@ namespace PersonDetection.Infrastructure.Identity
             var confirmed = _confirmedPersons.Count;
             var highConf = _globalIdentities.Values.Count(i =>
                 _confirmedPersons.ContainsKey(i.GlobalPersonId) &&
-                (i.IsConfirmedByConfidence || i.SeenOnCameras.Count > 1 || i.MatchCount >= 3));
+                (i.IsConfirmedByConfidence || i.SeenOnCameras.Count > 1 || i.MatchCount >= 2));
             return (total, confirmed, highConf);
         }
 
@@ -787,7 +710,6 @@ namespace PersonDetection.Infrastructure.Identity
         {
             var threshold = DateTime.UtcNow - expirationTime;
 
-            // Only cleanup unconfirmed, non-database entries
             var toRemove = _globalIdentities
                 .Where(kvp => !kvp.Value.IsFromDatabase &&
                              !_confirmedPersons.ContainsKey(kvp.Key) &&
@@ -801,9 +723,8 @@ namespace PersonDetection.Infrastructure.Identity
                 _entryTracking.TryRemove(id, out _);
             }
 
-            // Cleanup stability trackers
             var staleTrackers = _trackStability
-                .Where(kvp => (DateTime.UtcNow - kvp.Value.LastUpdate).TotalSeconds > 30)
+                .Where(kvp => (DateTime.UtcNow - kvp.Value.LastUpdate).TotalSeconds > 10)
                 .Select(kvp => kvp.Key)
                 .ToList();
             foreach (var key in staleTrackers)
@@ -811,7 +732,6 @@ namespace PersonDetection.Infrastructure.Identity
                 _trackStability.TryRemove(key, out _);
             }
 
-            // Cleanup active tracking
             foreach (var (_, activeDict) in _cameraActivePersons)
             {
                 var expired = activeDict.Where(kvp => kvp.Value < threshold).Select(kvp => kvp.Key).ToList();
@@ -820,7 +740,7 @@ namespace PersonDetection.Infrastructure.Identity
 
             if (toRemove.Count > 0)
             {
-                _logger.LogInformation("🧹 Cleaned {Count} unconfirmed identities", toRemove.Count);
+                _logger.LogDebug("🧹 Cleaned {Count} unconfirmed", toRemove.Count);
             }
         }
 
@@ -839,7 +759,7 @@ namespace PersonDetection.Infrastructure.Identity
         {
             if (_cameraActivePersons.TryRemove(cameraId, out var removed))
             {
-                _logger.LogWarning("🗑️ Cleared camera {Cam} tracking ({Count} entries)", cameraId, removed.Count);
+                _logger.LogWarning("🗑️ Cleared camera {Cam} ({Count} entries)", cameraId, removed.Count);
             }
         }
 
@@ -860,7 +780,6 @@ namespace PersonDetection.Infrastructure.Identity
             ["IsInitialized"] = _isInitialized
         };
 
-        // Today's count with caching
         private int _cachedTodayCount = 0;
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
 
