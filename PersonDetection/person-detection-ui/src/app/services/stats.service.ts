@@ -51,7 +51,7 @@ export interface SummaryStats {
   providedIn: 'root'
 })
 export class StatsService {
-  private baseUrl = `${environment.apiUrl}/api/stats`;
+private baseUrl = `${environment.apiUrl}/stats`;
 
   constructor(private http: HttpClient) {}
 
