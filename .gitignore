@@ -378,3 +378,5 @@ FodyWeavers.xsd
 /PersonDetection/Migrations/20260211163852_updateConfig3.cs
 /PersonDetection/Migrations/20260211153227_updateConfig2.Designer.cs
 /PersonDetection/Migrations/20260211163852_updateConfig3.Designer.cs
+/PersonDetection/Migrations/20260212102630_updateConfig4.cs
+/PersonDetection/Migrations/20260212102630_updateConfig4.Designer.cs

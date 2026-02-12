@@ -1,12 +1,18 @@
-﻿namespace PersonDetection.Domain.Services
+﻿// PersonDetection.Domain/Services/IPersonIdentityMatcher.cs
+namespace PersonDetection.Domain.Services
 {
     using PersonDetection.Domain.ValueObjects;
 
     public interface IPersonIdentityMatcher
     {
+        // Set frame dimensions for entry zone calculation
+        void SetFrameDimensions(int width, int height);
+
         Guid GetOrCreateIdentity(FeatureVector vector);
         Guid GetOrCreateIdentity(FeatureVector vector, int cameraId);
         Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox);
+        Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox, float detectionConfidence);
+        Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox, float detectionConfidence, int trackId);
 
         bool TryMatch(FeatureVector vector, out Guid personId, out float similarity);
 
@@ -19,23 +25,16 @@
         int GetActiveIdentityCount();
         int GetConfirmedIdentityCount();
         int GetCameraIdentityCount(int cameraId);
-        int GetGlobalUniqueCount();  // NEW: Total across all cameras
-        int GetCurrentlyActiveCount(int cameraId);  // NEW: Currently visible
+        int GetGlobalUniqueCount();
+        int GetCurrentlyActiveCount(int cameraId);
         int GetTodayUniqueCount();
+        int GetSessionUniqueCount();
 
         void CleanupExpired(TimeSpan expirationTime);
         void ClearAllIdentities();
         void ClearCameraIdentities(int cameraId);
-
-        int GetSessionUniqueCount();
         void StartNewSession();
 
-    }
-
-    public interface IDetectionValidator
-    {
-        bool IsValid(PersonDetection.Domain.Entities.DetectedPerson detection);
-        IEnumerable<PersonDetection.Domain.Entities.DetectedPerson> FilterValid(
-            IEnumerable<PersonDetection.Domain.Entities.DetectedPerson> detections);
+        Dictionary<string, object> GetStatistics();
     }
 }
