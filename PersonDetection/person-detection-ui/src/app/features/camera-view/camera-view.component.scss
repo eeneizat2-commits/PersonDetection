@@ -85,3 +85,52 @@
     }
   }
 }
+
+// In camera-view.component.scss, add:
+.unique-highlight {
+    color: #4caf50;
+    font-weight: 600;
+}
+
+.info-row {
+    &.highlight {
+        span {
+            color: #4caf50;
+            font-weight: 600;
+            font-size: 15px;
+        }
+        mat-icon {
+            color: #4caf50;
+        }
+    }
+    
+    &.secondary {
+        span {
+            color: #00bcd4;
+            font-size: 13px;
+            opacity: 0.9;
+        }
+        mat-icon {
+            color: #00bcd4;
+        }
+    }
+}
+
+// In dashboard.component.scss, add:
+.unique-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(76, 175, 80, 0.9);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    
+    mat-icon {
+        font-size: 14px;
+        width: 14px;
+        height: 14px;
+    }
+}

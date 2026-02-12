@@ -13,15 +13,16 @@ import { MatMenuModule } from '@angular/material/menu';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatBadgeModule } from '@angular/material/badge';
-import { Subject, takeUntil } from 'rxjs';
+import { Subject, takeUntil, timer } from 'rxjs';  // ✅ timer instead of interval
 
 import { CameraService } from '../../services/camera.service';
 import { CameraConfigService } from '../../services/camera-config.service';
 import { SignalRService } from '../../services/signalr.service';
-import { CameraDto, CameraType, DetectionUpdate } from '../../core/models/detection.models';
+import { DetectionService } from '../../services/detection.service';
+import { CameraDto, CameraType, DetectionUpdate, GlobalStats } from '../../core/models/detection.models';
 import { AddCameraDialogComponent } from '../add-camera-dialog/add-camera-dialog.component';
 import { VideoUploadDialogComponent } from '../video-upload-dialog/video-upload-dialog.component';
-
+import { StatsDialogComponent } from '../stats-dialog/stats-dialog.component';
 
 @Component({
     selector: 'app-dashboard',
@@ -47,6 +48,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
     private cameraService = inject(CameraService);
     private cameraConfigService = inject(CameraConfigService);
     private signalRService = inject(SignalRService);
+    private detectionService = inject(DetectionService);
     private snackBar = inject(MatSnackBar);
     private dialog = inject(MatDialog);
     private router = inject(Router);
@@ -55,33 +57,55 @@ export class DashboardComponent implements OnInit, OnDestroy {
     // Signals for reactive state
     cameras = signal<CameraDto[]>([]);
     detectionData = signal<Record<number, DetectionUpdate>>({});
+    globalStats = signal<GlobalStats | null>(null);
     loadingCameras = signal<Set<number>>(new Set());
     isLoading = signal(true);
 
     // Computed values
     activeCameras = computed(() => this.cameras().filter(c => c.isActive));
+
     totalPersons = computed(() => {
         const data = this.detectionData();
         return Object.values(data).reduce((sum, d) => sum + (d.count || 0), 0);
     });
+
     totalUnique = computed(() => {
         const data = this.detectionData();
-        return Object.values(data).reduce((sum, d) => sum + (d.uniqueCount || 0), 0);
+        const values = Object.values(data);
+
+        if (values.length > 0) {
+            const maxFromSignalR = Math.max(...values.map(d => d.todayUniqueCount || 0));
+            if (maxFromSignalR > 0) {
+                return maxFromSignalR;
+            }
+        }
+
+        const stats = this.globalStats();
+        return stats?.todayUniqueCount || 0;
     });
 
     ngOnInit(): void {
         this.loadCameras();
+        this.loadGlobalStats();
         this.subscribeToDetections();
     }
 
     ngOnDestroy(): void {
-        // Unsubscribe from all cameras when leaving dashboard
         this.cameras().filter(c => c.isActive).forEach(camera => {
             this.signalRService.unsubscribeFromCamera(camera.id);
         });
 
         this.destroy$.next();
         this.destroy$.complete();
+    }
+
+    openStatsDialog(): void {
+        this.dialog.open(StatsDialogComponent, {
+            width: '95vw',        // Use viewport width
+            maxWidth: '700px',    // But cap at 700px
+            maxHeight: '90vh',    // Cap height
+            panelClass: 'responsive-dialog'
+        });
     }
 
     private loadCameras(): void {
@@ -92,8 +116,6 @@ export class DashboardComponent implements OnInit, OnDestroy {
                 next: (cameras) => {
                     this.cameras.set(cameras);
                     this.isLoading.set(false);
-
-                    // Subscribe to SignalR for all active cameras
                     this.subscribeToActiveCameras(cameras);
                 },
                 error: (err) => {
@@ -103,6 +125,30 @@ export class DashboardComponent implements OnInit, OnDestroy {
             });
     }
 
+    private loadGlobalStats(): void {
+        this.detectionService.getGlobalStats()
+            .pipe(takeUntil(this.destroy$))
+            .subscribe({
+                next: (stats) => {
+                    this.globalStats.set(stats);
+                    console.log('Global stats loaded:', stats);
+                },
+                error: (err) => {
+                    console.error('Failed to load global stats:', err);
+                }
+            });
+    }
+
+    // ✅ FIXED: Use timer instead of interval
+    private startStatsPolling(): void {
+        timer(10000, 10000)  // Start after 10s, repeat every 10s
+            .pipe(takeUntil(this.destroy$))
+            .subscribe(() => {
+                this.loadGlobalStats();
+            });
+    }
+
+    // ... rest of the methods stay the same
     private async subscribeToActiveCameras(cameras: CameraDto[]): Promise<void> {
         const activeCameras = cameras.filter(c => c.isActive);
 
@@ -140,7 +186,6 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
             await this.signalRService.subscribeToCamera(camera.id);
 
-            // ✅ Optimistically update local state immediately
             this.cameras.update(cameras =>
                 cameras.map(c =>
                     c.id === camera.id
@@ -149,16 +194,17 @@ export class DashboardComponent implements OnInit, OnDestroy {
                 )
             );
 
+            this.loadGlobalStats();
             this.showSuccess(`${camera.name} started`);
 
         } catch (error: any) {
             console.error('Failed to start camera:', error);
             this.showError(error?.error?.message || `Failed to start ${camera.name}`);
-            // Reload to get correct state on error
             this.loadCameras();
         } finally {
             this.setLoadingCamera(camera.id, false);
         }
+        this.loadGlobalStats();
     }
 
     async stopCamera(camera: CameraDto): Promise<void> {
@@ -169,7 +215,6 @@ export class DashboardComponent implements OnInit, OnDestroy {
             await this.cameraService.stopCamera(camera.id).toPromise();
             await this.signalRService.unsubscribeFromCamera(camera.id);
 
-            // ✅ Optimistically update local state immediately
             this.cameras.update(cameras =>
                 cameras.map(c =>
                     c.id === camera.id
@@ -178,7 +223,6 @@ export class DashboardComponent implements OnInit, OnDestroy {
                 )
             );
 
-            // Clear detection data for this camera
             this.detectionData.update(data => {
                 const newData = { ...data };
                 delete newData[camera.id];
@@ -190,11 +234,11 @@ export class DashboardComponent implements OnInit, OnDestroy {
         } catch (error: any) {
             console.error('Failed to stop camera:', error);
             this.showError(error?.error?.message || `Failed to stop ${camera.name}`);
-            // Reload to get correct state on error
             this.loadCameras();
         } finally {
             this.setLoadingCamera(camera.id, false);
         }
+        this.loadGlobalStats();
     }
 
     openAddDialog(): void {
@@ -208,7 +252,6 @@ export class DashboardComponent implements OnInit, OnDestroy {
                 this.cameraConfigService.createCamera(result).subscribe({
                     next: (newCamera) => {
                         this.showSuccess('Camera added successfully');
-                        // Add new camera to local state
                         if (newCamera) {
                             this.cameras.update(cameras => [...cameras, newCamera]);
                         } else {
@@ -235,7 +278,6 @@ export class DashboardComponent implements OnInit, OnDestroy {
             this.cameraConfigService.deleteCamera(camera.id).subscribe({
                 next: () => {
                     this.showSuccess('Camera deleted');
-                    // Remove from local state
                     this.cameras.update(cameras =>
                         cameras.filter(c => c.id !== camera.id)
                     );

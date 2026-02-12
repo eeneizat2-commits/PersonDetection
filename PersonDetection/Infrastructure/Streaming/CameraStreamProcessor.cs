@@ -51,6 +51,8 @@ namespace PersonDetection.Infrastructure.Streaming
         // Thread-safe frame storage
         private readonly object _frameLock = new();
         private byte[]? _currentJpeg;
+        private int _frameWidth = 1280;
+        private int _frameHeight = 720;
 
         // Thread-safe detection storage
         private readonly object _detectionLock = new();
@@ -70,6 +72,29 @@ namespace PersonDetection.Infrastructure.Streaming
         private volatile bool _disposed;
         private volatile bool _isConnected;
 
+        // Pre-computed colors for faster rendering
+        private static readonly Scalar[] _personColors;
+        private static readonly Scalar _yellow = new(0, 255, 255);
+        private static readonly Scalar _white = new(255, 255, 255);
+        private static readonly Scalar _green = new(0, 255, 0);
+        private static readonly Scalar _cyan = new(255, 255, 0);
+        private static readonly Scalar _black = new(0, 0, 0);
+        private static readonly Scalar _overlayBg = new(0, 0, 0, 180);
+
+        static CameraStreamProcessor()
+        {
+            // Pre-generate 100 distinct colors
+            var rand = new Random(42);
+            _personColors = new Scalar[100];
+            for (int i = 0; i < 100; i++)
+            {
+                _personColors[i] = new Scalar(
+                    rand.Next(100, 255),
+                    rand.Next(100, 255),
+                    rand.Next(100, 255));
+            }
+        }
+
         public bool IsConnected => _isConnected;
         public int CurrentPersonCount => _currentTrackedPersons.Count;
         public int UniquePersonCount => _uniquePersonCount;
@@ -82,6 +107,24 @@ namespace PersonDetection.Infrastructure.Streaming
             public float Confidence { get; set; }
             public float[]? Features { get; set; }
             public bool IsNew { get; set; }
+            public bool HasReIdMatch { get; set; } // NEW: Track if matched via ReID
+            public int TrackId { get; set; } // NEW: For stability tracking
+            public int StableFrameCount { get; set; } // NEW: How many frames with same ID
+        }
+
+        // NEW: Stable track management
+        private readonly Dictionary<int, StableTrack> _stableTracks = new();
+        private int _nextTrackId = 1;
+
+        private class StableTrack
+        {
+            public int TrackId { get; set; }
+            public Guid GlobalPersonId { get; set; }
+            public BoundingBox LastBox { get; set; } = null!;
+            public DateTime LastSeen { get; set; }
+            public int ConsecutiveFrames { get; set; }
+            public float[]? Features { get; set; }
+            public float LastConfidence { get; set; }
         }
 
         public CameraStreamProcessor(
@@ -129,8 +172,12 @@ namespace PersonDetection.Infrastructure.Streaming
 
                     if (_isConnected)
                     {
+                        // Set frame dimensions for entry zone detection
+                        _identityMatcher.SetFrameDimensions(_frameWidth, _frameHeight);
+
                         StartAllTasks();
-                        _logger.LogInformation("✅ Camera {Id} connected to {Url}", _cameraId, url);
+                        _logger.LogInformation("✅ Camera {Id} connected to {Url} ({W}x{H})",
+                            _cameraId, url, _frameWidth, _frameHeight);
                         return true;
                     }
                 }
@@ -150,9 +197,6 @@ namespace PersonDetection.Infrastructure.Streaming
             return false;
         }
 
-        /// <summary>
-        /// Connect using OpenCV with FFMPEG for all stream types
-        /// </summary>
         private async Task<bool> ConnectWithOpenCvAsync(string url, CancellationToken ct)
         {
             return await Task.Run(async () =>
@@ -190,27 +234,23 @@ namespace PersonDetection.Infrastructure.Streaming
                     // HTTP/RTSP/File - use FFMPEG
                     _logger.LogInformation("Opening stream via FFMPEG: {Url}", url);
 
-                    // Set FFMPEG environment for low latency
                     Environment.SetEnvironmentVariable("OPENCV_FFMPEG_CAPTURE_OPTIONS",
-                        "rtsp_transport;tcp|buffer_size;1024000");
+                        "rtsp_transport;tcp|buffer_size;1024000|max_delay;500000");
 
                     _capture = new VideoCapture(url, VideoCaptureAPIs.FFMPEG);
 
                     if (_capture.IsOpened())
                     {
                         ConfigureCapture();
-                        _logger.LogInformation("Stream opened via FFMPEG");
                         return true;
                     }
 
-                    // Fallback to ANY
                     _capture.Dispose();
                     _capture = new VideoCapture(url, VideoCaptureAPIs.ANY);
 
                     if (_capture.IsOpened())
                     {
                         ConfigureCapture();
-                        _logger.LogInformation("Stream opened via ANY backend");
                         return true;
                     }
 
@@ -235,12 +275,15 @@ namespace PersonDetection.Infrastructure.Streaming
                 _capture.Set(VideoCaptureProperties.FrameWidth, _settings.ResizeWidth);
                 _capture.Set(VideoCaptureProperties.FrameHeight, _settings.ResizeHeight);
 
-                var width = _capture.Get(VideoCaptureProperties.FrameWidth);
-                var height = _capture.Get(VideoCaptureProperties.FrameHeight);
+                _frameWidth = (int)_capture.Get(VideoCaptureProperties.FrameWidth);
+                _frameHeight = (int)_capture.Get(VideoCaptureProperties.FrameHeight);
                 var fps = _capture.Get(VideoCaptureProperties.Fps);
 
+                if (_frameWidth <= 0) _frameWidth = _settings.ResizeWidth;
+                if (_frameHeight <= 0) _frameHeight = _settings.ResizeHeight;
+
                 _logger.LogInformation("Camera {Id}: {Width}x{Height} @ {Fps} FPS",
-                    _cameraId, width, height, fps);
+                    _cameraId, _frameWidth, _frameHeight, fps);
             }
             catch (Exception ex)
             {
@@ -254,16 +297,13 @@ namespace PersonDetection.Infrastructure.Streaming
             var ct = _cts.Token;
 
             _captureTask = Task.Run(() => SafeCaptureLoop(ct), ct);
-            _streamTask = Task.Run(() => StreamOutputLoop(ct), ct);
-            _detectionTask = Task.Run(() => DetectionLoop(ct), ct);
-            _saveTask = Task.Run(() => DatabaseSaveLoop(ct), ct);
+            _streamTask = Task.Run(() => OptimizedStreamOutputLoop(ct), ct);
+            _detectionTask = Task.Run(() => OptimizedDetectionLoop(ct), ct);
+            _saveTask = Task.Run(() => BatchDatabaseSaveLoop(ct), ct);
 
             _logger.LogInformation("All tasks started for camera {Id}", _cameraId);
         }
 
-        /// <summary>
-        /// THREAD-SAFE capture loop with proper error handling
-        /// </summary>
         private async Task SafeCaptureLoop(CancellationToken ct)
         {
             var frameInterval = TimeSpan.FromMilliseconds(1000.0 / _settings.TargetFps);
@@ -272,12 +312,10 @@ namespace PersonDetection.Infrastructure.Streaming
 
             _logger.LogInformation("🎥 Capture loop started for camera {Id}", _cameraId);
 
-            while (!ct.IsCancellationRequested && !_disposed)  // Simplified condition
+            while (!ct.IsCancellationRequested && !_disposed)
             {
-                // Check connection status inside the loop
                 if (!_isConnected)
                 {
-                    _logger.LogDebug("Camera {Id} not connected, exiting capture loop", _cameraId);
                     break;
                 }
 
@@ -286,10 +324,8 @@ namespace PersonDetection.Infrastructure.Streaming
                     var startTime = DateTime.UtcNow;
                     byte[]? jpegData = null;
 
-                    // Try to acquire lock with timeout
                     if (!await _captureLock.WaitAsync(1000, ct))
                     {
-                        _logger.LogWarning("Capture lock timeout for camera {Id}", _cameraId);
                         continue;
                     }
 
@@ -300,7 +336,6 @@ namespace PersonDetection.Infrastructure.Streaming
                             consecutiveErrors++;
                             if (consecutiveErrors > MaxConsecutiveErrors)
                             {
-                                _logger.LogError("Too many capture errors, disconnecting camera {Id}", _cameraId);
                                 _isConnected = false;
                                 break;
                             }
@@ -320,10 +355,18 @@ namespace PersonDetection.Infrastructure.Streaming
 
                         consecutiveErrors = 0;
 
+                        // Update frame dimensions if changed
+                        if (frame.Width != _frameWidth || frame.Height != _frameHeight)
+                        {
+                            _frameWidth = frame.Width;
+                            _frameHeight = frame.Height;
+                            _identityMatcher.SetFrameDimensions(_frameWidth, _frameHeight);
+                        }
+
                         Cv2.ImEncode(".jpg", frame, out jpegData, new[]
                         {
-                    (int)ImwriteFlags.JpegQuality, _settings.JpegQuality
-                });
+                            (int)ImwriteFlags.JpegQuality, _settings.JpegQuality
+                        });
                     }
                     finally
                     {
@@ -341,27 +384,17 @@ namespace PersonDetection.Infrastructure.Streaming
                         await Task.Delay(frameInterval - elapsed, ct);
                     }
                 }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogDebug("Capture loop cancelled for camera {Id}", _cameraId);
-                    break;
-                }
-                catch (ObjectDisposedException)
-                {
-                    _logger.LogDebug("Capture disposed for camera {Id}", _cameraId);
-                    break;
-                }
+                catch (OperationCanceledException) { break; }
+                catch (ObjectDisposedException) { break; }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Capture error for camera {Id}", _cameraId);
+                    _logger.LogError(ex, "Capture error");
                     consecutiveErrors++;
-
                     if (consecutiveErrors > MaxConsecutiveErrors)
                     {
                         _isConnected = false;
                         break;
                     }
-
                     try { await Task.Delay(100, ct); } catch { break; }
                 }
             }
@@ -386,9 +419,13 @@ namespace PersonDetection.Infrastructure.Streaming
             }
         }
 
-        private async Task StreamOutputLoop(CancellationToken ct)
+        /// <summary>
+        /// OPTIMIZED stream output with pre-rendered overlay
+        /// </summary>
+        private async Task OptimizedStreamOutputLoop(CancellationToken ct)
         {
             var frameInterval = TimeSpan.FromMilliseconds(1000.0 / _settings.TargetFps);
+            var encodeParams = new[] { (int)ImwriteFlags.JpegQuality, _settings.JpegQuality };
 
             while (!ct.IsCancellationRequested && _isConnected && !_disposed)
             {
@@ -403,17 +440,15 @@ namespace PersonDetection.Infrastructure.Streaming
                     List<TrackedPerson> persons;
                     lock (_detectionLock) { persons = _currentTrackedPersons.ToList(); }
 
-                    // Decode, annotate, encode
+                    // Decode frame
                     using var frame = Mat.FromImageData(jpeg, ImreadModes.Color);
                     if (frame.Empty()) continue;
 
-                    DrawAnnotations(frame, persons);
+                    // Fast annotation drawing
+                    DrawOptimizedAnnotations(frame, persons);
 
-                    Cv2.ImEncode(".jpg", frame, out var annotatedJpeg, new[]
-                    {
-                        (int)ImwriteFlags.JpegQuality, _settings.JpegQuality
-                    });
-
+                    // Encode and send
+                    Cv2.ImEncode(".jpg", frame, out var annotatedJpeg, encodeParams);
                     _streamChannel.Writer.TryWrite(annotatedJpeg);
                 }
                 catch (OperationCanceledException) { break; }
@@ -424,7 +459,10 @@ namespace PersonDetection.Infrastructure.Streaming
             }
         }
 
-        private async Task DetectionLoop(CancellationToken ct)
+        /// <summary>
+        /// OPTIMIZED detection loop with proper confidence passing
+        /// </summary>
+        private async Task OptimizedDetectionLoop(CancellationToken ct)
         {
             var detectionInterval = TimeSpan.FromMilliseconds(_settings.DetectionIntervalMs);
             var config = new YoloDetectionConfig
@@ -434,8 +472,14 @@ namespace PersonDetection.Infrastructure.Streaming
                 ModelInputSize = _detectionSettings.ModelInputSize
             };
 
+            var reidConfig = new OSNetConfig();
             int framesSinceLastReId = 0;
-            const int ReIdEveryNFrames = 5;
+            var reIdInterval = Math.Max(1, _settings.ReIdEveryNFrames);
+
+            // Confirmation tracking - REDUCED to 2 frames
+            var pendingConfirmations = new Dictionary<Guid, PendingPerson>();
+            const int RequiredConfirmationFrames = 2; // CHANGED from 3 to 2
+            const int MaxPendingAge = 8;
 
             while (!ct.IsCancellationRequested && _isConnected && !_disposed)
             {
@@ -447,14 +491,27 @@ namespace PersonDetection.Infrastructure.Streaming
                     lock (_frameLock) { jpeg = _currentJpeg; }
                     if (jpeg == null) continue;
 
+                    // Run YOLO detection
                     var detections = await _detectionEngine.DetectAsync(jpeg, config, ct);
+
+                    // Filter by minimum size
+                    detections = detections
+                        .Where(d => d.BoundingBox.Width >= _detectionSettings.MinWidth &&
+                                   d.BoundingBox.Height >= _detectionSettings.MinHeight)
+                        .ToList();
 
                     var trackedPersons = new List<TrackedPerson>();
                     framesSinceLastReId++;
 
                     bool shouldRunReId = _reidEngine != null &&
                                          detections.Count > 0 &&
-                                         framesSinceLastReId >= ReIdEveryNFrames;
+                                         framesSinceLastReId >= reIdInterval;
+
+                    var seenThisFrame = new HashSet<Guid>();
+                    var now = DateTime.UtcNow;
+
+                    // Clean up old tracks
+                    CleanupStaleTracks(now);
 
                     foreach (var detection in detections)
                     {
@@ -462,48 +519,165 @@ namespace PersonDetection.Infrastructure.Streaming
                         {
                             BoundingBox = detection.BoundingBox,
                             Confidence = detection.Confidence,
-                            GlobalPersonId = Guid.NewGuid()
+                            GlobalPersonId = Guid.Empty,
+                            HasReIdMatch = false
                         };
 
+                        // Step 1: Find existing stable track by position
+                        var existingTrack = FindExistingTrack(detection.BoundingBox);
+                        if (existingTrack != null)
+                        {
+                            tracked.TrackId = existingTrack.TrackId;
+                            tracked.GlobalPersonId = existingTrack.GlobalPersonId;
+                            tracked.Features = existingTrack.Features;
+                        }
+                        else
+                        {
+                            tracked.TrackId = _nextTrackId++;
+                        }
+
+                        // Step 2: Run ReID (THIS IS THE KEY FIX)
                         if (shouldRunReId)
                         {
                             try
                             {
-                                var reidConfig = new OSNetConfig();
-                                var featureVector = await _reidEngine!.ExtractFeaturesAsync(
-                                    jpeg, detection.BoundingBox, reidConfig, ct);
+                                var cropArea = detection.BoundingBox.Width * detection.BoundingBox.Height;
+                                var minArea = 20 * 40; // Minimum crop area
 
-                                tracked.Features = featureVector.Values;
-                                var globalId = _identityMatcher.GetOrCreateIdentity(featureVector, _cameraId);
-                                tracked.GlobalPersonId = globalId;
-
-                                if (!_seenPersonIds.Contains(globalId))
+                                if (cropArea >= minArea)
                                 {
-                                    _seenPersonIds.Add(globalId);
-                                    tracked.IsNew = true;
+                                    var featureVector = await _reidEngine!.ExtractFeaturesAsync(
+                                        jpeg, detection.BoundingBox, reidConfig, ct);
+
+                                    tracked.Features = featureVector.Values;
+
+                                    // ★★★ KEY FIX: Pass confidence and trackId to identity matcher ★★★
+                                    var reidId = _identityMatcher.GetOrCreateIdentity(
+                                        featureVector,
+                                        _cameraId,
+                                        detection.BoundingBox,
+                                        detection.Confidence,  // ← NOW PASSING CONFIDENCE
+                                        tracked.TrackId);      // ← NOW PASSING TRACK ID
+
+                                    if (reidId != Guid.Empty)
+                                    {
+                                        tracked.GlobalPersonId = reidId;
+                                        tracked.HasReIdMatch = true;
+
+                                        // Update stable track with ReID result
+                                        UpdateStableTrack(tracked, now);
+
+                                        _logger.LogDebug(
+                                            "🔍 ReID: Track {Track} → {Id} (conf={Conf:P0})",
+                                            tracked.TrackId, reidId.ToString()[..8], detection.Confidence);
+                                    }
                                 }
                             }
-                            catch { }
-                        }
-                        else if (_currentTrackedPersons.Count > 0)
-                        {
-                            var bestMatch = FindBestPositionMatch(detection.BoundingBox);
-                            if (bestMatch != null)
+                            catch (Exception ex)
                             {
-                                tracked.GlobalPersonId = bestMatch.GlobalPersonId;
-                                tracked.Features = bestMatch.Features;
+                                _logger.LogWarning(ex, "ReID failed for track {Track}", tracked.TrackId);
                             }
                         }
 
+                        // Step 3: If no ReID match, use stable track's ID
+                        if (tracked.GlobalPersonId == Guid.Empty && existingTrack != null)
+                        {
+                            tracked.GlobalPersonId = existingTrack.GlobalPersonId;
+                        }
+
+                        // Step 4: Create new tracking ID if still empty
+                        if (tracked.GlobalPersonId == Guid.Empty)
+                        {
+                            tracked.GlobalPersonId = Guid.NewGuid();
+                            _logger.LogDebug("🆕 New track: {Track} → {Id}",
+                                tracked.TrackId, tracked.GlobalPersonId.ToString()[..8]);
+                        }
+
+                        // Always update stable track
+                        UpdateStableTrack(tracked, now);
+
+                        // Confirmation logic for unique counting
+                        if (!_seenPersonIds.Contains(tracked.GlobalPersonId))
+                        {
+                            if (!pendingConfirmations.ContainsKey(tracked.GlobalPersonId))
+                            {
+                                pendingConfirmations[tracked.GlobalPersonId] = new PendingPerson
+                                {
+                                    FirstSeen = now,
+                                    FrameCount = 0,
+                                    HasFeatures = false,
+                                    MaxConfidence = 0
+                                };
+                            }
+
+                            var pending = pendingConfirmations[tracked.GlobalPersonId];
+                            pending.FrameCount++;
+                            pending.LastSeen = now;
+                            pending.HasFeatures |= (tracked.Features != null);
+                            pending.MaxConfidence = Math.Max(pending.MaxConfidence, detection.Confidence);
+
+                            // ★★★ KEY FIX: Relaxed confirmation logic ★★★
+                            bool shouldConfirm = false;
+
+                            // Method 1: Standard frame count (reduced to 2)
+                            if (pending.FrameCount >= RequiredConfirmationFrames && pending.HasFeatures)
+                            {
+                                shouldConfirm = true;
+                            }
+
+                            // Method 2: High confidence fast-track (2 frames with >55% confidence)
+                            if (pending.FrameCount >= 2 && pending.MaxConfidence >= 0.55f)
+                            {
+                                shouldConfirm = true;
+                            }
+
+                            // Method 3: Very high confidence (1 frame with >75% + features)
+                            if (detection.Confidence >= 0.75f && tracked.Features != null)
+                            {
+                                shouldConfirm = true;
+                            }
+
+                            if (shouldConfirm)
+                            {
+                                _seenPersonIds.Add(tracked.GlobalPersonId);
+                                pendingConfirmations.Remove(tracked.GlobalPersonId);
+                                tracked.IsNew = true;
+
+                                _logger.LogInformation(
+                                    "✅ CONFIRMED: {Id} (frames={F}, conf={C:P0}, features={Feat})",
+                                    tracked.GlobalPersonId.ToString()[..8],
+                                    pending.FrameCount,
+                                    pending.MaxConfidence,
+                                    pending.HasFeatures);
+                            }
+                        }
+
+                        seenThisFrame.Add(tracked.GlobalPersonId);
                         trackedPersons.Add(tracked);
                     }
 
-                    if (shouldRunReId) framesSinceLastReId = 0;
+                    if (shouldRunReId)
+                    {
+                        framesSinceLastReId = 0;
+
+                        // Clean up stale pending confirmations
+                        var staleIds = pendingConfirmations
+                            .Where(kvp => !seenThisFrame.Contains(kvp.Key) ||
+                                          kvp.Value.FrameCount > MaxPendingAge ||
+                                          (now - kvp.Value.LastSeen).TotalSeconds > 3)
+                            .Select(kvp => kvp.Key)
+                            .ToList();
+
+                        foreach (var id in staleIds)
+                        {
+                            pendingConfirmations.Remove(id);
+                        }
+                    }
 
                     lock (_detectionLock)
                     {
                         _currentTrackedPersons = trackedPersons;
-                        _uniquePersonCount = _seenPersonIds.Count;
+                        _uniquePersonCount = _identityMatcher.GetCameraIdentityCount(_cameraId);
                     }
 
                     await NotifyClientsAsync(trackedPersons);
@@ -511,54 +685,112 @@ namespace PersonDetection.Infrastructure.Streaming
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Detection error");
+                    _logger.LogError(ex, "Detection loop error");
                 }
             }
         }
 
-        private TrackedPerson? FindBestPositionMatch(BoundingBox newBox)
-        {
-            TrackedPerson? best = null;
-            float bestIoU = 0.3f;
+        #region Stable Track Management
 
-            foreach (var person in _currentTrackedPersons)
+        private StableTrack? FindExistingTrack(BoundingBox newBox)
+        {
+            StableTrack? best = null;
+            float bestScore = float.MaxValue;
+            var maxDistance = 120f; // Max pixel movement between frames
+
+            foreach (var track in _stableTracks.Values)
             {
-                var iou = CalculateIoU(newBox, person.BoundingBox);
-                if (iou > bestIoU) { bestIoU = iou; best = person; }
+                var dx = (newBox.X + newBox.Width / 2f) - (track.LastBox.X + track.LastBox.Width / 2f);
+                var dy = (newBox.Y + newBox.Height / 2f) - (track.LastBox.Y + track.LastBox.Height / 2f);
+                var centerDist = (float)Math.Sqrt(dx * dx + dy * dy);
+
+                if (centerDist > maxDistance) continue;
+
+                // Size similarity bonus
+                var sizeRatio = Math.Min(
+                    (float)newBox.Width / track.LastBox.Width,
+                    (float)track.LastBox.Width / newBox.Width) *
+                    Math.Min(
+                    (float)newBox.Height / track.LastBox.Height,
+                    (float)track.LastBox.Height / newBox.Height);
+
+                var score = centerDist / Math.Max(sizeRatio, 0.5f);
+
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = track;
+                }
             }
+
             return best;
         }
 
-        private float CalculateIoU(BoundingBox a, BoundingBox b)
+        private void UpdateStableTrack(TrackedPerson person, DateTime now)
         {
-            int x1 = Math.Max(a.X, b.X);
-            int y1 = Math.Max(a.Y, b.Y);
-            int x2 = Math.Min(a.X + a.Width, b.X + b.Width);
-            int y2 = Math.Min(a.Y + a.Height, b.Y + b.Height);
+            if (!_stableTracks.TryGetValue(person.TrackId, out var track))
+            {
+                track = new StableTrack { TrackId = person.TrackId };
+                _stableTracks[person.TrackId] = track;
+            }
 
-            int intersect = Math.Max(0, x2 - x1) * Math.Max(0, y2 - y1);
-            if (intersect == 0) return 0;
-
-            int union = (a.Width * a.Height) + (b.Width * b.Height) - intersect;
-            return (float)intersect / union;
+            track.GlobalPersonId = person.GlobalPersonId;
+            track.LastBox = person.BoundingBox;
+            track.LastSeen = now;
+            track.ConsecutiveFrames++;
+            track.Features = person.Features ?? track.Features;
+            track.LastConfidence = person.Confidence;
         }
 
-        private async Task DatabaseSaveLoop(CancellationToken ct)
+        private void CleanupStaleTracks(DateTime now)
         {
+            var staleTrackIds = _stableTracks
+                .Where(kvp => (now - kvp.Value.LastSeen).TotalSeconds > 2)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var id in staleTrackIds)
+            {
+                _stableTracks.Remove(id);
+            }
+        }
+
+        #endregion
+
+        private class PendingPerson
+        {
+            public DateTime FirstSeen { get; set; }
+            public DateTime LastSeen { get; set; }
+            public int FrameCount { get; set; }
+            public bool HasFeatures { get; set; }
+            public float MaxConfidence { get; set; }
+        }
+
+        /// <summary>
+        /// Batch database save for better performance
+        /// </summary>
+        private async Task BatchDatabaseSaveLoop(CancellationToken ct)
+        {
+            var saveInterval = TimeSpan.FromSeconds(_persistenceSettings.SaveIntervalSeconds);
+            var personsToSave = new List<TrackedPerson>();
+
             while (!ct.IsCancellationRequested && _isConnected && !_disposed)
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(_persistenceSettings.SaveIntervalSeconds), ct);
+                    await Task.Delay(saveInterval, ct);
                     if (!_persistenceSettings.SaveToDatabase) continue;
 
                     List<TrackedPerson> persons;
                     lock (_detectionLock) { persons = _currentTrackedPersons.ToList(); }
 
-                    if (persons.Count > 0 || _lastSavedCount != 0)
+                    // Only save persons with features (confirmed by ReID)
+                    var confirmedPersons = persons.Where(p => p.Features != null).ToList();
+
+                    if (confirmedPersons.Count > 0 || _lastSavedCount != 0)
                     {
-                        await SaveToDatabaseAsync(persons, ct);
-                        _lastSavedCount = persons.Count;
+                        await BatchSaveToDatabaseAsync(confirmedPersons, ct);
+                        _lastSavedCount = confirmedPersons.Count;
                     }
                 }
                 catch (OperationCanceledException) { break; }
@@ -569,16 +801,15 @@ namespace PersonDetection.Infrastructure.Streaming
             }
         }
 
-        private async Task SaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)
+        private async Task BatchSaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)
         {
             try
             {
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-
-                // Use a short timeout
                 context.Database.SetCommandTimeout(10);
 
+                // Create detection result
                 var result = new DetectionResult
                 {
                     CameraId = _cameraId,
@@ -590,6 +821,7 @@ namespace PersonDetection.Infrastructure.Streaming
                 context.DetectionResults.Add(result);
                 await context.SaveChangesAsync(ct);
 
+                // Batch process persons
                 foreach (var person in persons)
                 {
                     var uniquePerson = await context.UniquePersons
@@ -631,70 +863,124 @@ namespace PersonDetection.Infrastructure.Streaming
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "DB save failed - will retry");
+                _logger.LogWarning(ex, "DB batch save failed");
             }
         }
 
-        private void DrawAnnotations(Mat frame, List<TrackedPerson> persons)
+        /// <summary>
+        /// OPTIMIZED annotation drawing - faster rendering
+        /// </summary>
+        private void DrawOptimizedAnnotations(Mat frame, List<TrackedPerson> persons)
         {
-            var yellow = new Scalar(0, 255, 255);
-            var white = new Scalar(255, 255, 255);
-            var black = new Scalar(0, 0, 0);
-            var font = HersheyFonts.HersheySimplex;
-            var rand = new Random(42);
+            const HersheyFonts font = HersheyFonts.HersheySimplex;
+            const double fontScale = 0.45;
+            const int thickness = 1;
+            const int boxThickness = 2;
+            const int cornerLen = 18;
 
+            // Draw each person
             foreach (var person in persons)
             {
-                var color = new Scalar(rand.Next(100, 255), rand.Next(100, 255), rand.Next(100, 255));
+                // Get consistent color based on person ID
+                var colorIndex = Math.Abs(person.GlobalPersonId.GetHashCode()) % _personColors.Length;
+                var color = _personColors[colorIndex];
                 var box = person.BoundingBox;
 
-                DrawCornerBox(frame, box.X, box.Y, box.Width, box.Height, color, 2, 20);
+                // Draw corner box (faster than full rectangle)
+                DrawCornerBoxFast(frame, box.X, box.Y, box.Width, box.Height, color, boxThickness, cornerLen);
 
-                var label = $"P-{person.GlobalPersonId.ToString()[..6]} {person.Confidence:P0}";
-                var labelPos = new CvPoint(box.X, Math.Max(25, box.Y - 8));
-                var textSize = Cv2.GetTextSize(label, font, 0.4, 1, out _);
+                // Draw label
+                var idStr = person.GlobalPersonId.ToString()[..6];
+                var label = $"P-{idStr} {person.Confidence:P0}";
 
-                Cv2.Rectangle(frame, new Rect(labelPos.X - 2, labelPos.Y - textSize.Height - 4,
-                    textSize.Width + 4, textSize.Height + 8), color, -1);
-                Cv2.PutText(frame, label, labelPos, font, 0.4, black, 1, LineTypes.AntiAlias);
+                var labelY = Math.Max(18, box.Y - 6);
+                var labelPos = new CvPoint(box.X, labelY);
+
+                // Background for text
+                var textSize = Cv2.GetTextSize(label, font, fontScale, thickness, out _);
+                Cv2.Rectangle(frame,
+                    new Rect(labelPos.X - 1, labelPos.Y - textSize.Height - 2,
+                            textSize.Width + 2, textSize.Height + 4),
+                    color, -1);
+
+                // Text
+                Cv2.PutText(frame, label, labelPos, font, fontScale, _black, thickness, LineTypes.AntiAlias);
             }
 
-            Cv2.Rectangle(frame, new Rect(5, 5, 180, 55), new Scalar(0, 0, 0, 200), -1);
-            Cv2.PutText(frame, $"Current: {persons.Count} | Unique: {_uniquePersonCount}",
-                new CvPoint(10, 25), font, 0.5, yellow, 1);
-            Cv2.PutText(frame, $"{DateTime.Now:HH:mm:ss} | {_currentFps:F0} FPS",
-                new CvPoint(10, 45), font, 0.4, white, 1);
+            // Draw info overlay
+            DrawInfoOverlay(frame, persons.Count);
         }
 
-        private void DrawCornerBox(Mat frame, int x, int y, int w, int h, Scalar color, int t, int len)
+        private void DrawCornerBoxFast(Mat frame, int x, int y, int w, int h, Scalar color, int t, int len)
         {
             int x2 = x + w, y2 = y + h;
             len = Math.Min(len, Math.Min(w, h) / 3);
+
+            // Top-left
             Cv2.Line(frame, new CvPoint(x, y), new CvPoint(x + len, y), color, t);
             Cv2.Line(frame, new CvPoint(x, y), new CvPoint(x, y + len), color, t);
+            // Top-right
             Cv2.Line(frame, new CvPoint(x2, y), new CvPoint(x2 - len, y), color, t);
             Cv2.Line(frame, new CvPoint(x2, y), new CvPoint(x2, y + len), color, t);
+            // Bottom-left
             Cv2.Line(frame, new CvPoint(x, y2), new CvPoint(x + len, y2), color, t);
             Cv2.Line(frame, new CvPoint(x, y2), new CvPoint(x, y2 - len), color, t);
+            // Bottom-right
             Cv2.Line(frame, new CvPoint(x2, y2), new CvPoint(x2 - len, y2), color, t);
             Cv2.Line(frame, new CvPoint(x2, y2), new CvPoint(x2, y2 - len), color, t);
         }
 
-        private async Task NotifyClientsAsync(List<TrackedPerson> persons)
+        private void DrawInfoOverlay(Mat frame, int currentCount)
+        {
+            const HersheyFonts font = HersheyFonts.HersheySimplex;
+            var todayUnique = _identityMatcher.GetTodayUniqueCount();
+
+            // Background box
+            Cv2.Rectangle(frame, new Rect(5, 5, 175, 62), _black, -1);
+
+            // Line 1: Current
+            Cv2.PutText(frame, $"Current: {currentCount}",
+                new CvPoint(10, 20), font, 0.48, _yellow, 1);
+
+            // Line 2: Unique Today (highlighted)
+            Cv2.PutText(frame, $"Unique Today: {todayUnique}",
+                new CvPoint(10, 40), font, 0.52, _green, 1);
+
+            // Line 3: Time + FPS
+            Cv2.PutText(frame, $"{DateTime.Now:HH:mm:ss} | {_currentFps:F0} FPS",
+                new CvPoint(10, 58), font, 0.38, _white, 1);
+        }
+
+        private async Task NotifyClientsAsync(List<TrackedPerson> trackedPersons)
         {
             try
             {
-                await _hubContext.Clients.Group($"camera_{_cameraId}")
-                    .SendAsync("DetectionUpdate", new
+                var todayUnique = _identityMatcher.GetTodayUniqueCount();
+
+                var update = new
+                {
+                    cameraId = _cameraId,
+                    count = trackedPersons.Count,
+                    uniqueCount = _uniquePersonCount,
+                    todayUniqueCount = todayUnique,
+                    timestamp = DateTime.UtcNow,
+                    fps = _currentFps,
+                    persons = trackedPersons.Select(p => new
                     {
-                        CameraId = _cameraId,
-                        Count = persons.Count,
-                        UniqueCount = _uniquePersonCount,
-                        Timestamp = DateTime.UtcNow,
-                        Fps = _currentFps
-                    });
+                        id = p.GlobalPersonId.ToString()[..8],
+                        confidence = p.Confidence,
+                        isNew = p.IsNew,
+                        hasReId = p.HasReIdMatch
+                    }).ToList()
+                };
+
+                await _hubContext.Clients.Group($"camera_{_cameraId}")
+                    .SendAsync("DetectionUpdate", update);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to notify clients");
+            }
         }
 
         public async IAsyncEnumerable<byte[]> ReadFramesAsync([EnumeratorCancellation] CancellationToken ct = default)
@@ -711,20 +997,13 @@ namespace PersonDetection.Infrastructure.Streaming
 
         public void Disconnect()
         {
-            // Remove the _disposed check here - we want to disconnect even during disposal
             if (!_isConnected && _capture == null) return;
 
             _logger.LogInformation("⏹️ Disconnecting camera {Id}...", _cameraId);
             _isConnected = false;
 
-            // Cancel all tasks
-            try
-            {
-                _cts?.Cancel();
-            }
-            catch (ObjectDisposedException) { }
+            try { _cts?.Cancel(); } catch { }
 
-            // Wait for tasks to complete with timeout
             try
             {
                 var allTasks = new List<Task>();
@@ -735,24 +1014,11 @@ namespace PersonDetection.Infrastructure.Streaming
 
                 if (allTasks.Count > 0)
                 {
-                    var completed = Task.WaitAll(allTasks.ToArray(), TimeSpan.FromSeconds(5));
-                    if (!completed)
-                    {
-                        _logger.LogWarning("⚠️ Some tasks didn't complete in time for camera {Id}", _cameraId);
-                    }
+                    Task.WaitAll(allTasks.ToArray(), TimeSpan.FromSeconds(5));
                 }
             }
-            catch (AggregateException ex)
-            {
-                // Tasks were cancelled - this is expected
-                _logger.LogDebug("Tasks cancelled: {Message}", ex.InnerException?.Message);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Error waiting for tasks to complete");
-            }
+            catch { }
 
-            // Dispose the capture
             try
             {
                 _captureLock.Wait(TimeSpan.FromSeconds(2));
@@ -763,7 +1029,6 @@ namespace PersonDetection.Infrastructure.Streaming
                         _capture.Release();
                         _capture.Dispose();
                         _capture = null;
-                        _logger.LogInformation("📷 Camera {Id} capture released", _cameraId);
                     }
                 }
                 finally
@@ -771,10 +1036,10 @@ namespace PersonDetection.Infrastructure.Streaming
                     _captureLock.Release();
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Error disposing capture for camera {Id}", _cameraId);
-            }
+            catch { }
+
+            // Clear stable tracks
+            _stableTracks.Clear();
 
             _logger.LogInformation("✅ Camera {Id} disconnected", _cameraId);
         }
@@ -784,31 +1049,12 @@ namespace PersonDetection.Infrastructure.Streaming
             if (_disposed) return;
             _disposed = true;
 
-            _logger.LogInformation("🗑️ Disposing camera {Id} processor...", _cameraId);
-
-            // Disconnect first (stop capture and tasks)
             Disconnect();
 
-            // Then dispose managed resources
-            try
-            {
-                _cts?.Dispose();
-            }
-            catch { }
+            try { _cts?.Dispose(); } catch { }
+            try { _captureLock.Dispose(); } catch { }
+            try { _streamChannel.Writer.TryComplete(); } catch { }
 
-            try
-            {
-                _captureLock.Dispose();
-            }
-            catch { }
-
-            try
-            {
-                _streamChannel.Writer.TryComplete();
-            }
-            catch { }
-
-            // Clear state
             lock (_frameLock) { _currentJpeg = null; }
             lock (_detectionLock) { _currentTrackedPersons.Clear(); }
 

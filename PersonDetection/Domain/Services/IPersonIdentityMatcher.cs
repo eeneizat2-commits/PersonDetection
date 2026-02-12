@@ -1,58 +1,40 @@
-﻿namespace PersonDetection.Domain.Services
+﻿// PersonDetection.Domain/Services/IPersonIdentityMatcher.cs
+namespace PersonDetection.Domain.Services
 {
     using PersonDetection.Domain.ValueObjects;
 
     public interface IPersonIdentityMatcher
     {
-        /// <summary>
-        /// Get or create identity from feature vector
-        /// </summary>
+        // Set frame dimensions for entry zone calculation
+        void SetFrameDimensions(int width, int height);
+
         Guid GetOrCreateIdentity(FeatureVector vector);
-
-        /// <summary>
-        /// Get or create identity with camera context
-        /// </summary>
         Guid GetOrCreateIdentity(FeatureVector vector, int cameraId);
+        Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox);
+        Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox, float detectionConfidence);
+        Guid GetOrCreateIdentity(FeatureVector vector, int cameraId, BoundingBox? boundingBox, float detectionConfidence, int trackId);
 
-        /// <summary>
-        /// Try to match a feature vector to existing identity
-        /// </summary>
         bool TryMatch(FeatureVector vector, out Guid personId, out float similarity);
 
-        /// <summary>
-        /// Update an existing identity's feature vector
-        /// </summary>
         void UpdateIdentity(Guid personId, FeatureVector vector);
-
-        /// <summary>
-        /// Update identity with camera context
-        /// </summary>
         void UpdateIdentity(Guid personId, FeatureVector vector, int cameraId);
 
-        /// <summary>
-        /// Set the database ID for a person
-        /// </summary>
         void SetDbId(Guid personId, int dbId);
-
-        /// <summary>
-        /// Get the database ID for a person
-        /// </summary>
         int GetDbId(Guid personId);
 
-        /// <summary>
-        /// Get count of active identities in memory
-        /// </summary>
         int GetActiveIdentityCount();
+        int GetConfirmedIdentityCount();
+        int GetCameraIdentityCount(int cameraId);
+        int GetGlobalUniqueCount();
+        int GetCurrentlyActiveCount(int cameraId);
+        int GetTodayUniqueCount();
+        int GetSessionUniqueCount();
 
-        /// <summary>
-        /// Clean up expired identities
-        /// </summary>
         void CleanupExpired(TimeSpan expirationTime);
-    }
-    public interface IDetectionValidator
-    {
-        bool IsValid(PersonDetection.Domain.Entities.DetectedPerson detection);
-        IEnumerable<PersonDetection.Domain.Entities.DetectedPerson> FilterValid(
-            IEnumerable<PersonDetection.Domain.Entities.DetectedPerson> detections);
+        void ClearAllIdentities();
+        void ClearCameraIdentities(int cameraId);
+        void StartNewSession();
+
+        Dictionary<string, object> GetStatistics();
     }
 }

@@ -15,7 +15,12 @@
                 <mat-icon>add_circle</mat-icon>
                 Add Camera
             </button>
+            <button mat-raised-button color="accent" (click)="openStatsDialog()">
+                <mat-icon>analytics</mat-icon>
+                View Statistics
+            </button>
         </div>
+
     </header>
 
     <!-- Stats Cards -->
@@ -153,7 +158,10 @@
                             <div class="detection-badge">
                                 <mat-icon>person</mat-icon>
                                 <span class="count">{{ detection.count }}</span>
-                                <span class="unique">({{ detection.uniqueCount }} unique)</span>
+                            </div>
+                            <div class="unique-badge">
+                                <mat-icon>fingerprint</mat-icon>
+                                <span>{{ detection.todayUniqueCount }} today</span>
                             </div>
                             <div class="fps-badge">
                                 {{ detection.fps | number:'1.0-0' }} FPS
