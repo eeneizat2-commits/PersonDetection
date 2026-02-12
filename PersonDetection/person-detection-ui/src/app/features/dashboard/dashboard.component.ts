@@ -101,8 +101,10 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
     openStatsDialog(): void {
         this.dialog.open(StatsDialogComponent, {
-            width: '800px',
-            maxHeight: '90vh'
+            width: '95vw',        // Use viewport width
+            maxWidth: '700px',    // But cap at 700px
+            maxHeight: '90vh',    // Cap height
+            panelClass: 'responsive-dialog'
         });
     }
 
