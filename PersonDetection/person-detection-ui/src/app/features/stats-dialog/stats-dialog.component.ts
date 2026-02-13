@@ -44,7 +44,7 @@ export class StatsDialogComponent implements OnInit {
   error: string | null = null;
 
   // Quick select options
-  selectedPeriod: string = '7';
+  selectedPeriod: string = '3';
   customStartDate: Date | null = null;
   customEndDate: Date | null = null;
 
