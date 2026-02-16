@@ -1,5 +1,5 @@
 # Person Detection Project
-A system for detecting and tracking people in videos using OpenCV and YOLO/ONNX models, with Angular frontend and C# Core API backend.
+A system for detecting and tracking people in videos and streams using OpenCV and YOLO/ONNX models, with Angular frontend and C# Core API backend.
 
 #back-end structure 
 ```PersonDetection/
