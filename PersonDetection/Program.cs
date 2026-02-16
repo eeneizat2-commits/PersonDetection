@@ -39,6 +39,10 @@ builder.Services.Configure<SignalRSettings>(
     builder.Configuration.GetSection(SignalRSettings.SectionName));
 builder.Services.Configure<PersistenceSettings>(
     builder.Configuration.GetSection(PersistenceSettings.SectionName));
+builder.Services.Configure<TrackingSettings>(
+    builder.Configuration.GetSection(TrackingSettings.SectionName));
+
+
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = 500 * 1024 * 1024; // 500 MB

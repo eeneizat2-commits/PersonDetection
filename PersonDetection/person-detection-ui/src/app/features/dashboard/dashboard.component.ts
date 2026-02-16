@@ -100,11 +100,24 @@ export class DashboardComponent implements OnInit, OnDestroy {
     }
 
     openStatsDialog(): void {
-        this.dialog.open(StatsDialogComponent, {
-            width: '95vw',        // Use viewport width
-            maxWidth: '700px',    // But cap at 700px
-            maxHeight: '90vh',    // Cap height
-            panelClass: 'responsive-dialog'
+        // Add class to body to prevent background scroll
+        document.body.classList.add('dialog-open');
+
+        const dialogRef = this.dialog.open(StatsDialogComponent, {
+            width: '900px',
+            maxWidth: '95vw',
+            maxHeight: '90vh',
+            panelClass: 'stats-dialog-panel',        // ← Add this
+            backdropClass: 'stats-dialog-backdrop',   // ← Add this
+            disableClose: false,
+            hasBackdrop: true,
+            autoFocus: false,
+            restoreFocus: false
+        });
+
+        // Remove class when dialog closes
+        dialogRef.afterClosed().subscribe(() => {
+            document.body.classList.remove('dialog-open');
         });
     }
 

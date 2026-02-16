@@ -1,9 +1,22 @@
 // src/app/features/stats-dialog/stats-dialog.component.scss
 :host {
   display: block;
+  // Ensure host takes full dialog space
+  width: 100%;
+  height: 100%;
 }
 
-// Dialog title
+// Wrapper to catch all clicks
+.stats-dialog-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: white;
+  // Prevent any click-through
+  pointer-events: auto;
+}
+
+// Dialog title - fixed at top
 h2[mat-dialog-title] {
   display: flex;
   align-items: center;
@@ -11,10 +24,8 @@ h2[mat-dialog-title] {
   margin: 0;
   padding: 16px 24px;
   border-bottom: 1px solid #e0e0e0;
-  position: sticky;
-  top: 0;
   background: white;
-  z-index: 10;
+  flex-shrink: 0;
   
   mat-icon {
     color: #4CAF50;
@@ -24,13 +35,15 @@ h2[mat-dialog-title] {
 // Dialog content - scrollable
 mat-dialog-content {
   padding: 16px 24px !important;
-  max-height: 65vh !important;
+  flex: 1;
   overflow-y: auto !important;
+  overflow-x: hidden !important;
+  min-height: 200px;
+  max-height: calc(90vh - 140px) !important;
   
-  // Mobile
   @media (max-width: 600px) {
     padding: 12px 16px !important;
-    max-height: 60vh !important;
+    max-height: calc(90vh - 120px) !important;
   }
 }
 
@@ -103,19 +116,17 @@ mat-dialog-content {
   }
 }
 
-// Summary cards - RESPONSIVE GRID
+// Summary cards
 .summary-cards {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 20px;
   
-  // Tablet
   @media (max-width: 768px) {
     grid-template-columns: repeat(2, 1fr);
   }
   
-  // Mobile
   @media (max-width: 480px) {
     grid-template-columns: repeat(2, 1fr);
     gap: 8px;
@@ -129,7 +140,7 @@ mat-dialog-content {
   padding: 12px;
   border-radius: 10px;
   background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%);
-  min-width: 0; // Allow shrinking
+  min-width: 0;
 
   &.total {
     background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
@@ -170,7 +181,7 @@ mat-dialog-content {
   .stat-info {
     display: flex;
     flex-direction: column;
-    min-width: 0; // Allow text truncation
+    min-width: 0;
 
     .stat-value {
       font-size: 20px;
@@ -225,7 +236,7 @@ h3 {
   }
 }
 
-// Daily table - RESPONSIVE
+// Daily table
 .table-container {
   width: 100%;
   overflow-x: auto;
@@ -236,7 +247,7 @@ h3 {
 
 .daily-table {
   width: 100%;
-  min-width: 450px; // Minimum width before scroll
+  min-width: 450px;
 
   th {
     background: #f5f5f5;
@@ -263,7 +274,7 @@ h3 {
   }
 }
 
-// Camera breakdown - RESPONSIVE GRID
+// Camera breakdown
 .camera-breakdown {
   margin-top: 20px;
 }
@@ -283,7 +294,7 @@ h3 {
   background: #f8f9fa;
   border-radius: 8px;
   border-left: 4px solid #2196F3;
-  min-width: 0; // Allow shrinking
+  min-width: 0;
 
   .camera-name {
     display: flex;
@@ -311,14 +322,13 @@ h3 {
   }
 }
 
-// Dialog actions
+// Dialog actions - fixed at bottom
 mat-dialog-actions {
   padding: 12px 24px !important;
   border-top: 1px solid #e0e0e0;
   margin: 0 !important;
-  position: sticky;
-  bottom: 0;
   background: white;
+  flex-shrink: 0;
   
   @media (max-width: 600px) {
     padding: 12px 16px !important;

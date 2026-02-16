@@ -5,10 +5,10 @@ namespace PersonDetection.Application.Configuration
     {
         public const string SectionName = "DetectionConfig";
 
-        public float ConfidenceThreshold { get; set; } = 0.25f;
+        public float ConfidenceThreshold { get; set; } = 0.30f;
         public float NmsThreshold { get; set; } = 0.45f;
-        public int MinWidth { get; set; } = 12;
-        public int MinHeight { get; set; } = 25;
+        public int MinWidth { get; set; } = 15;
+        public int MinHeight { get; set; } = 30;
         public int ModelInputSize { get; set; } = 640;
         public string YoloModelPath { get; set; } = "Models/yolo11s.onnx";
         public string ReIdModelPath { get; set; } = "Models/osnet_x1_0.onnx";
@@ -20,72 +20,150 @@ namespace PersonDetection.Application.Configuration
         public const string SectionName = "IdentityConfig";
 
         // ═══════════════════════════════════════════════════════════════
-        // MATCHING THRESHOLDS - STRICT (harder to match = more new)
+        // MATCHING THRESHOLDS
         // ═══════════════════════════════════════════════════════════════
-        public float DistanceThreshold { get; set; } = 0.25f;
-        public float MinDistanceForNewIdentity { get; set; } = 0.15f;
-        public float GlobalMatchThreshold { get; set; } = 0.20f;
-        public float SimilarityThreshold { get; set; } = 0.80f;
-        public float MinSeparationRatio { get; set; } = 1.05f;
+
+        /// <summary>
+        /// Maximum distance for DEFINITE match (same person for sure)
+        /// Below this = reuse existing ID
+        /// </summary>
+        public float MinDistanceForNewIdentity { get; set; } = 0.30f;
+
+        /// <summary>
+        /// Maximum distance for ANY match consideration
+        /// Between MinDistanceForNewIdentity and this = AMBIGUOUS → NEW ID
+        /// Above this = definitely different person → NEW ID
+        /// </summary>
+        public float DistanceThreshold { get; set; } = 0.50f;
+
+        /// <summary>
+        /// Threshold for global cross-camera matching
+        /// </summary>
+        public float GlobalMatchThreshold { get; set; } = 0.45f;
+
+        /// <summary>
+        /// Similarity threshold (1 - distance) for matching
+        /// </summary>
+        public float SimilarityThreshold { get; set; } = 0.65f;
+
+        /// <summary>
+        /// Minimum ratio between best and second-best match
+        /// </summary>
+        public float MinSeparationRatio { get; set; } = 1.10f;
 
         // ═══════════════════════════════════════════════════════════════
-        // TEMPORAL MATCHING - AGGRESSIVE
+        // TEMPORAL MATCHING
         // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Enable time-based matching constraints
+        /// </summary>
         public bool EnableTemporalMatching { get; set; } = true;
-        public int MaxSecondsForActiveMatch { get; set; } = 15;
-        public int MaxMinutesForRecentMatch { get; set; } = 1;
-        public float PenaltyForStaleMatch { get; set; } = 0.50f;
+
+        /// <summary>
+        /// Maximum seconds since last seen for "active" match (no penalty)
+        /// </summary>
+        public int MaxSecondsForActiveMatch { get; set; } = 30;
+
+        /// <summary>
+        /// Maximum minutes since last seen for "recent" match (small penalty)
+        /// </summary>
+        public int MaxMinutesForRecentMatch { get; set; } = 5;
+
+        /// <summary>
+        /// Distance penalty added for stale database matches
+        /// </summary>
+        public float PenaltyForStaleMatch { get; set; } = 0.20f;
+
+        /// <summary>
+        /// Require person to have been seen recently to match
+        /// </summary>
         public bool RequireRecentActivityForMatch { get; set; } = true;
-
-        // ═══════════════════════════════════════════════════════════════
-        // ★★★ NEW: ONLY MATCH ACTIVE IDENTITIES ★★★
-        // ═══════════════════════════════════════════════════════════════
-
-        /// <summary>
-        /// ONLY match against identities seen in the last N seconds
-        /// Ignores ALL database entries and old identities
-        /// </summary>
-        public bool OnlyMatchActiveIdentities { get; set; } = true;
-
-        /// <summary>
-        /// Timeout in seconds for an identity to be considered "active"
-        /// </summary>
-        public int ActiveIdentityTimeoutSeconds { get; set; } = 20;
-
-        /// <summary>
-        /// When ambiguous (multiple close matches), create NEW identity instead of picking one
-        /// </summary>
-        public bool TreatAmbiguousAsNew { get; set; } = true;
 
         // ═══════════════════════════════════════════════════════════════
         // ENTRY ZONE DETECTION
         // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Enable entry zone detection for new person identification
+        /// </summary>
         public bool EnableEntryZoneDetection { get; set; } = true;
-        public int EntryZoneMarginPercent { get; set; } = 25;
-        public float NewPersonBonusDistance { get; set; } = 0.15f;
+
+        /// <summary>
+        /// Percentage of frame edges considered "entry zone"
+        /// </summary>
+        public int EntryZoneMarginPercent { get; set; } = 15;
+
+        /// <summary>
+        /// Distance bonus subtracted from threshold in entry zone
+        /// Makes it harder to match (more new identities) in entry zones
+        /// </summary>
+        public float NewPersonBonusDistance { get; set; } = 0.10f;
 
         // ═══════════════════════════════════════════════════════════════
         // MATCH STABILITY
         // ═══════════════════════════════════════════════════════════════
-        public int MatchStabilityFrames { get; set; } = 1;
+
+        /// <summary>
+        /// Number of consecutive frames needed to change identity
+        /// </summary>
+        public int MatchStabilityFrames { get; set; } = 2;
 
         // ═══════════════════════════════════════════════════════════════
-        // FAST WALKER / INSTANT CONFIRMATION
+        // CONFIRMATION SETTINGS
         // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Enable confidence-based confirmation
+        /// </summary>
         public bool EnableConfidenceBasedConfirmation { get; set; } = true;
-        public float MinConfidenceForConfirmation { get; set; } = 0.25f;
-        public int MinHighConfidenceDetections { get; set; } = 1;
-        public float FastWalkerTimeWindowSeconds { get; set; } = 10.0f;
+
+        /// <summary>
+        /// Minimum confidence for a detection to count toward confirmation
+        /// </summary>
+        public float MinConfidenceForConfirmation { get; set; } = 0.40f;
+
+        /// <summary>
+        /// Number of high-confidence detections needed for confirmation
+        /// </summary>
+        public int MinHighConfidenceDetections { get; set; } = 2;
+
+        /// <summary>
+        /// Time window for fast walker confirmation (seconds)
+        /// </summary>
+        public float FastWalkerTimeWindowSeconds { get; set; } = 5.0f;
+
+        /// <summary>
+        /// Enable fast walker mode (single-frame confirmation)
+        /// </summary>
         public bool EnableFastWalkerMode { get; set; } = true;
-        public int ConfirmationMatchCount { get; set; } = 1;
+
+        /// <summary>
+        /// Number of frames needed to confirm identity (normal walkers)
+        /// </summary>
+        public int ConfirmationMatchCount { get; set; } = 2;
+
+        /// <summary>
+        /// Treat ambiguous matches as confirmed (create new ID)
+        /// </summary>
         public bool AmbiguousMatchAsConfirmed { get; set; } = true;
-        public float InstantConfirmConfidence { get; set; } = 0.30f;
+
+        /// <summary>
+        /// Confidence threshold for INSTANT confirmation (single frame)
+        /// </summary>
+        public float InstantConfirmConfidence { get; set; } = 0.50f;
+
+        /// <summary>
+        /// Very high confidence threshold (confirms even without features)
+        /// </summary>
+        public float VeryHighConfidenceThreshold { get; set; } = 0.60f;
 
         // ═══════════════════════════════════════════════════════════════
         // CACHE & MEMORY
         // ═══════════════════════════════════════════════════════════════
-        public int CacheExpirationMinutes { get; set; } = 10;
-        public int MaxIdentitiesInMemory { get; set; } = 500;
+
+        public int CacheExpirationMinutes { get; set; } = 30;
+        public int MaxIdentitiesInMemory { get; set; } = 1000;
         public bool UpdateVectorOnMatch { get; set; } = false;
         public bool UseAdaptiveThreshold { get; set; } = false;
         public bool RequireMinimumSeparation { get; set; } = false;
@@ -93,21 +171,184 @@ namespace PersonDetection.Application.Configuration
         // ═══════════════════════════════════════════════════════════════
         // CROP SIZE
         // ═══════════════════════════════════════════════════════════════
-        public int MinCropWidth { get; set; } = 12;
-        public int MinCropHeight { get; set; } = 25;
+
+        public int MinCropWidth { get; set; } = 20;
+        public int MinCropHeight { get; set; } = 40;
+
+        /// <summary>
+        /// Minimum crop area multiplier (0.4 = 40% of MinCropWidth * MinCropHeight)
+        /// </summary>
+        public float MinCropAreaMultiplier { get; set; } = 0.4f;
+
+        /// <summary>
+        /// Minimum crop dimension multiplier (0.7 = 70% of MinCropWidth/Height)
+        /// </summary>
+        public float MinCropDimensionMultiplier { get; set; } = 0.7f;
 
         // ═══════════════════════════════════════════════════════════════
-        // GLOBAL MATCHING - DISABLED
+        // GLOBAL MATCHING
         // ═══════════════════════════════════════════════════════════════
-        public bool EnableGlobalMatching { get; set; } = false;
-        public bool LoadFromDatabaseOnStartup { get; set; } = false;
-        public int DatabaseLoadHours { get; set; } = 0;
+
+        public bool EnableGlobalMatching { get; set; } = true;
+        public bool LoadFromDatabaseOnStartup { get; set; } = true;
+        public int DatabaseLoadHours { get; set; } = 2;
 
         // ═══════════════════════════════════════════════════════════════
         // CONSOLIDATION
         // ═══════════════════════════════════════════════════════════════
+
         public bool EnableIdentityConsolidation { get; set; } = false;
         public float ConsolidationThreshold { get; set; } = 0.10f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // FEATURE VALIDATION
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Minimum variance for valid feature vector
+        /// </summary>
+        public float MinFeatureVariance { get; set; } = 0.000001f;
+
+        /// <summary>
+        /// Expected feature vector dimension
+        /// </summary>
+        public int FeatureVectorDimension { get; set; } = 512;
+
+        /// <summary>
+        /// Minimum confidence to proceed with ReID when size is small
+        /// </summary>
+        public float MinConfidenceForSmallDetection { get; set; } = 0.25f;
+
+        /// <summary>
+        /// Single frame instant confirmation threshold
+        /// Any detection >= this confidence with features = instant unique
+        /// </summary>
+        public float SingleFrameInstantConfirmConfidence { get; set; } = 0.60f;
+    }
+
+    public class TrackingSettings
+    {
+        public const string SectionName = "TrackingConfig";
+
+        // ═══════════════════════════════════════════════════════════════
+        // SPATIAL TRACKING
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Maximum pixel distance for normal walking speed
+        /// </summary>
+        public float NormalMaxDistance { get; set; } = 120f;
+
+        /// <summary>
+        /// Maximum pixel distance for fast walking speed
+        /// </summary>
+        public float FastWalkerMaxDistance { get; set; } = 250f;
+
+        /// <summary>
+        /// Bonus distance when features match well
+        /// </summary>
+        public float FeatureMatchBonusDistance { get; set; } = 80f;
+
+        /// <summary>
+        /// Feature distance threshold for "good match" bonus
+        /// </summary>
+        public float FeatureMatchThreshold { get; set; } = 0.35f;
+
+        /// <summary>
+        /// Score multiplier when predicted position matches
+        /// </summary>
+        public float PredictionMatchBonus { get; set; } = 0.8f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // STABLE TRACK SETTINGS
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Minimum frames for a track to become "stable" (normal walker)
+        /// </summary>
+        public int StableTrackMinFrames { get; set; } = 2;
+
+        /// <summary>
+        /// Minimum confidence for a track to become "stable" (normal walker)
+        /// </summary>
+        public float StableTrackMinConfidence { get; set; } = 0.45f;
+
+        /// <summary>
+        /// Minimum frames for fast walker to become stable
+        /// </summary>
+        public int FastWalkerStableFrames { get; set; } = 1;
+
+        /// <summary>
+        /// Minimum confidence for fast walker to become stable
+        /// </summary>
+        public float FastWalkerStableConfidence { get; set; } = 0.35f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // VELOCITY TRACKING
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Smoothing factor for velocity (0-1, higher = more responsive)
+        /// </summary>
+        public float VelocitySmoothingAlpha { get; set; } = 0.6f;
+
+        /// <summary>
+        /// Minimum speed (pixels/frame) to be considered "fast walker"
+        /// </summary>
+        public float FastWalkerSpeedThreshold { get; set; } = 60f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // TRACK CLEANUP
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Seconds before normal track is cleaned up
+        /// </summary>
+        public float NormalTrackTimeoutSeconds { get; set; } = 2.0f;
+
+        /// <summary>
+        /// Seconds before fast walker track is cleaned up
+        /// </summary>
+        public float FastWalkerTrackTimeoutSeconds { get; set; } = 3.0f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // CONFIRMATION
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Minimum confidence for 2-frame confirmation
+        /// </summary>
+        public float TwoFrameConfirmMinConfidence { get; set; } = 0.45f;
+
+        /// <summary>
+        /// Minimum confidence for high-conf single-frame confirmation
+        /// </summary>
+        public float HighConfSingleFrameThreshold { get; set; } = 0.60f;
+
+        /// <summary>
+        /// Maximum age (frames) for pending confirmation
+        /// </summary>
+        public int MaxPendingConfirmationAge { get; set; } = 8;
+
+        /// <summary>
+        /// Maximum time (seconds) for pending confirmation
+        /// </summary>
+        public float MaxPendingConfirmationSeconds { get; set; } = 3.0f;
+
+        // ═══════════════════════════════════════════════════════════════
+        // LEGACY SETTINGS (for compatibility)
+        // ═══════════════════════════════════════════════════════════════
+
+        public int MaxAge { get; set; } = 30;
+        public int MinHits { get; set; } = 2;
+        public float IouThreshold { get; set; } = 0.3f;
+        public float MaxPositionDistance { get; set; } = 200f;
+        public float VelocityWeight { get; set; } = 0.4f;
+        public bool UseKalmanPrediction { get; set; } = true;
+        /// <summary>
+        /// Single frame instant confirmation threshold (bypass all other checks)
+        /// </summary>
+        public float SingleFrameInstantThreshold { get; set; } = 0.60f;
     }
 
     public class StreamingSettings
@@ -126,6 +367,11 @@ namespace PersonDetection.Application.Configuration
         public int ResizeHeight { get; set; } = 720;
         public int SkipFrames { get; set; } = 0;
         public bool UseHardwareAcceleration { get; set; } = true;
+
+        // ═══════════════════════════════════════════════════════════════
+        // OVERLAY SETTINGS
+        // ═══════════════════════════════════════════════════════════════
+
         public bool EnableFastOverlay { get; set; } = true;
         public double OverlayFontScale { get; set; } = 0.5;
         public int OverlayThickness { get; set; } = 2;
@@ -133,17 +379,6 @@ namespace PersonDetection.Application.Configuration
         public bool ShowTrackId { get; set; } = true;
     }
 
-    public class TrackingSettings
-    {
-        public const string SectionName = "TrackingConfig";
-
-        public int MaxAge { get; set; } = 30;
-        public int MinHits { get; set; } = 1;
-        public float IouThreshold { get; set; } = 0.25f;
-        public float MaxPositionDistance { get; set; } = 250f;
-        public float VelocityWeight { get; set; } = 0.4f;
-        public bool UseKalmanPrediction { get; set; } = true;
-    }
 
     public class SignalRSettings
     {

@@ -1,5 +1,5 @@
 // src/app/features/stats-dialog/stats-dialog.component.ts
-import { Component, OnInit, Inject } from '@angular/core';
+import { Component, OnInit, OnDestroy, Inject, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MAT_DIALOG_DATA, MatDialogRef, MatDialogModule } from '@angular/material/dialog';
@@ -14,7 +14,8 @@ import { MatInputModule } from '@angular/material/input';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
-import { StatsService, HistoricalStats, DailyStats } from '../../services/stats.service';
+import { StatsService, HistoricalStats } from '../../services/stats.service';
+import { Subject, takeUntil } from 'rxjs';
 
 @Component({
   selector: 'app-stats-dialog',
@@ -36,34 +37,52 @@ import { StatsService, HistoricalStats, DailyStats } from '../../services/stats.
     MatChipsModule
   ],
   templateUrl: './stats-dialog.component.html',
-  styleUrls: ['./stats-dialog.component.scss']
+  styleUrls: ['./stats-dialog.component.scss'],
+  // Use OnPush to reduce change detection cycles
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class StatsDialogComponent implements OnInit {
+export class StatsDialogComponent implements OnInit, OnDestroy {
   stats: HistoricalStats | null = null;
   loading = false;
   error: string | null = null;
 
-  // Quick select options
   selectedPeriod: string = '3';
   customStartDate: Date | null = null;
   customEndDate: Date | null = null;
 
-  // Display columns
   displayedColumns: string[] = ['date', 'dayName', 'uniquePersons', 'totalDetections', 'peakHour'];
+
+  private destroy$ = new Subject<void>();
 
   constructor(
     private statsService: StatsService,
+    private cdr: ChangeDetectorRef,
     public dialogRef: MatDialogRef<StatsDialogComponent>,
     @Inject(MAT_DIALOG_DATA) public data: { cameraId?: number }
-  ) {}
+  ) {
+    // Prevent backdrop click from causing issues
+    this.dialogRef.disableClose = false;
+    
+    // Add class to body to prevent scroll
+    document.body.classList.add('dialog-open');
+  }
 
   ngOnInit(): void {
     this.loadStats();
   }
 
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+    
+    // Remove body class
+    document.body.classList.remove('dialog-open');
+  }
+
   loadStats(): void {
     this.loading = true;
     this.error = null;
+    this.cdr.markForCheck();
 
     let observable;
 
@@ -79,14 +98,16 @@ export class StatsDialogComponent implements OnInit {
       observable = this.statsService.getHistoricalStats(days, undefined, undefined, this.data?.cameraId);
     }
 
-    observable.subscribe({
+    observable.pipe(takeUntil(this.destroy$)).subscribe({
       next: (stats) => {
         this.stats = stats;
         this.loading = false;
+        this.cdr.markForCheck();
       },
       error: (err) => {
         this.error = 'Failed to load statistics';
         this.loading = false;
+        this.cdr.markForCheck();
         console.error(err);
       }
     });
@@ -119,5 +140,10 @@ export class StatsDialogComponent implements OnInit {
 
   close(): void {
     this.dialogRef.close();
+  }
+
+  // Prevent event propagation on dialog content
+  onDialogClick(event: Event): void {
+    event.stopPropagation();
   }
 }

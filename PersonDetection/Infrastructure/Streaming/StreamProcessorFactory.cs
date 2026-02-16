@@ -53,6 +53,8 @@ namespace PersonDetection.Infrastructure.Streaming
                     _serviceProvider.GetRequiredService<IOptions<StreamingSettings>>(),
                     _serviceProvider.GetRequiredService<IOptions<DetectionSettings>>(),
                     _serviceProvider.GetRequiredService<IOptions<PersistenceSettings>>(),
+                    _serviceProvider.GetRequiredService<IOptions<TrackingSettings>>(),      // ← ADD THIS
+                    _serviceProvider.GetRequiredService<IOptions<IdentitySettings>>(),      // ← ADD THIS
                     _serviceProvider.GetRequiredService<ILogger<CameraStreamProcessor>>()
                 );
             });

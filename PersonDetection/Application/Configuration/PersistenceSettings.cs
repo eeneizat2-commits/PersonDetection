@@ -10,5 +10,11 @@
         public int MinCountChangeThreshold { get; set; } = 1;
         public int MaxStoredResults { get; set; } = 1000;
         public int CleanupIntervalMinutes { get; set; } = 60;
+
+        // ═══════════════════════════════════════════════════════════════
+        // NEW: Add these if missing
+        // ═══════════════════════════════════════════════════════════════
+        public bool BatchSaveEnabled { get; set; } = true;
+        public int BatchSize { get; set; } = 10;
     }
 }
