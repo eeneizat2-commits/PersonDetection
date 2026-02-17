@@ -382,7 +382,7 @@ namespace PersonDetection.Infrastructure.Streaming
             while (!ct.IsCancellationRequested && !_disposed)
             {
                 // Check if we need to reconnect
-                if (!_isConnected || _connectionState == StreamConnectionState.Reconnecting)
+                if (!_isConnected)
                 {
                     if (_streamingSettings.EnableAutoReconnect)
                     {
@@ -394,6 +394,10 @@ namespace PersonDetection.Infrastructure.Streaming
                             break;
                         }
                         consecutiveErrors = 0;
+
+                        // CRITICAL: Restart other loops after successful reconnection
+                        RestartProcessingTasks(ct);
+
                         continue;
                     }
                     else
@@ -534,10 +538,19 @@ namespace PersonDetection.Infrastructure.Streaming
             var frameInterval = TimeSpan.FromMilliseconds(1000.0 / _streamingSettings.TargetFps);
             var encodeParams = new[] { (int)ImwriteFlags.JpegQuality, _streamingSettings.JpegQuality };
 
-            while (!ct.IsCancellationRequested && _isConnected && !_disposed)
+            _logger.LogDebug("📺 Stream output loop started for camera {Id}", _cameraId);
+
+            while (!ct.IsCancellationRequested && !_disposed)
             {
                 try
                 {
+                    // Wait during reconnection instead of exiting
+                    if (!_isConnected)
+                    {
+                        await Task.Delay(500, ct);
+                        continue;
+                    }
+
                     await Task.Delay(frameInterval, ct);
 
                     byte[]? jpeg;
@@ -559,8 +572,11 @@ namespace PersonDetection.Infrastructure.Streaming
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Stream output error");
+                    await Task.Delay(100, ct);
                 }
             }
+
+            _logger.LogDebug("📺 Stream output loop ended for camera {Id}", _cameraId);
         }
 
         #endregion
@@ -583,10 +599,17 @@ namespace PersonDetection.Infrastructure.Streaming
 
             var pendingConfirmations = new Dictionary<Guid, PendingPerson>();
 
-            while (!ct.IsCancellationRequested && _isConnected && !_disposed)
+            while (!ct.IsCancellationRequested && !_disposed)
             {
                 try
                 {
+                    // Wait during reconnection instead of exiting
+                    if (!_isConnected)
+                    {
+                        await Task.Delay(500, ct);
+                        continue;
+                    }
+
                     await Task.Delay(detectionInterval, ct);
 
                     byte[]? jpeg;
@@ -1227,6 +1250,35 @@ namespace PersonDetection.Infrastructure.Streaming
             }
         }
 
+        /// <summary>
+        /// Restart processing tasks after successful reconnection
+        /// </summary>
+        private void RestartProcessingTasks(CancellationToken ct)
+        {
+            _logger.LogInformation("🔄 Camera {Id}: Restarting processing tasks after reconnection", _cameraId);
+
+            // Check and restart stream output task
+            if (_streamTask == null || _streamTask.IsCompleted)
+            {
+                _streamTask = Task.Run(() => OptimizedStreamOutputLoop(ct), ct);
+                _logger.LogDebug("Camera {Id}: Stream output task restarted", _cameraId);
+            }
+
+            // Check and restart detection task
+            if (_detectionTask == null || _detectionTask.IsCompleted)
+            {
+                _detectionTask = Task.Run(() => OptimizedDetectionLoop(ct), ct);
+                _logger.LogDebug("Camera {Id}: Detection task restarted", _cameraId);
+            }
+
+            // Check and restart save task
+            if (_saveTask == null || _saveTask.IsCompleted)
+            {
+                _saveTask = Task.Run(() => BatchDatabaseSaveLoop(ct), ct);
+                _logger.LogDebug("Camera {Id}: Database save task restarted", _cameraId);
+            }
+        }
+
         #endregion
 
         #region Database Save Loop
@@ -1236,11 +1288,17 @@ namespace PersonDetection.Infrastructure.Streaming
             var saveInterval = TimeSpan.FromSeconds(_persistenceSettings.SaveIntervalSeconds);
             var personsToSave = new List<TrackedPerson>();
 
-            while (!ct.IsCancellationRequested && _isConnected && !_disposed)
+            _logger.LogDebug("💾 Database save loop started for camera {Id}", _cameraId);
+
+            while (!ct.IsCancellationRequested && !_disposed)  // ✅ CHANGED: removed _isConnected
             {
                 try
                 {
                     await Task.Delay(saveInterval, ct);
+
+                    // Skip saving during reconnection
+                    if (!_isConnected) continue;  // ✅ ADD THIS
+
                     if (!_persistenceSettings.SaveToDatabase) continue;
 
                     List<TrackedPerson> persons;
@@ -1260,6 +1318,8 @@ namespace PersonDetection.Infrastructure.Streaming
                     _logger.LogError(ex, "DB save error");
                 }
             }
+
+            _logger.LogDebug("💾 Database save loop ended for camera {Id}", _cameraId);
         }
 
         private async Task BatchSaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)

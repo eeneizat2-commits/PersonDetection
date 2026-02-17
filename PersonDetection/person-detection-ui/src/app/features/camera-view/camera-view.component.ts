@@ -132,15 +132,26 @@ export class CameraViewComponent implements OnInit, OnDestroy {
   }
 
   private handleStreamStatusChange(status: StreamStatusUpdate): void {
+    const previousState = this.streamStatus?.state;
+
     console.log(`Camera ${this.cameraId} status:`, status.stateName, status.stateMessage);
 
     switch (status.state) {
       case StreamConnectionState.Connected:
         this.isStreamStale = false;
+
+        // AUTO-REFRESH: If we were reconnecting and now connected, refresh the stream
+        if (previousState === StreamConnectionState.Reconnecting ||
+          previousState === StreamConnectionState.Error) {
+          console.log(`Camera ${this.cameraId}: Auto-refreshing stream after reconnection`);
+          setTimeout(() => this.refreshStream(), 500); // Small delay to ensure backend is ready
+        }
         break;
+
       case StreamConnectionState.Reconnecting:
         console.warn(`Camera ${this.cameraId} is reconnecting (attempt ${status.reconnectAttempt})`);
         break;
+
       case StreamConnectionState.Error:
       case StreamConnectionState.Stopped:
         this.isStreamStale = true;
@@ -149,12 +160,25 @@ export class CameraViewComponent implements OnInit, OnDestroy {
   }
 
   private checkStreamHealth(): void {
-    if (!this.lastFrameTime) return;
+    if (!this.camera?.isActive) return;
 
-    const timeSinceLastFrame = Date.now() - this.lastFrameTime.getTime();
+    // Check based on last frame time
+    if (this.lastFrameTime) {
+      const timeSinceLastFrame = Date.now() - this.lastFrameTime.getTime();
 
-    if (timeSinceLastFrame > environment.stream.staleFrameThresholdMs) {
-      this.isStreamStale = true;
+      if (timeSinceLastFrame > environment.stream.staleFrameThresholdMs) {
+        if (!this.isStreamStale) {
+          console.warn(`Camera ${this.cameraId}: Stream appears stale (no updates for ${timeSinceLastFrame}ms)`);
+          this.isStreamStale = true;
+        }
+
+        // Auto-refresh if stale for too long (e.g., 2x threshold)
+        if (timeSinceLastFrame > environment.stream.staleFrameThresholdMs * 2) {
+          console.log(`Camera ${this.cameraId}: Auto-refreshing stale stream`);
+          this.refreshStream();
+          this.lastFrameTime = new Date(); // Reset to prevent continuous refresh
+        }
+      }
     }
   }
 

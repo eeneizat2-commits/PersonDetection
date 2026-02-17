@@ -13,6 +13,8 @@ export const environment = {
   stream: {
     healthCheckIntervalMs: 5000,
     staleFrameThresholdMs: 10000,
-    showReconnectingOverlay: true
+    showReconnectingOverlay: true,
+    autoRefreshOnReconnect: true,      // ADD
+    autoRefreshStaleStream: true        // ADD
   }
 };
