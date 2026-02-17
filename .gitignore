@@ -411,3 +411,6 @@ FodyWeavers.xsd
 /PersonDetection/Migrations/20260211134725_AddSightingCountToUniquePerson.Designer.cs
 /PersonDetection/Migrations/20260211145739_updateConfig.cs
 /PersonDetection/Migrations/20260211145739_updateConfig.Designer.cs
+/PersonDetection/Migrations/DetectionContextModelSnapshot.cs
+**/Migrations/
+/PersonDetection/Migrations/

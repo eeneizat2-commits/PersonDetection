@@ -1,63 +1,103 @@
 <!-- src/app/features/camera-view/camera-view.component.html -->
 <div class="camera-view" [class.fullscreen]="isFullscreen">
-    <mat-toolbar class="view-toolbar">
-        <button mat-icon-button (click)="goBack()">
-            <mat-icon>arrow_back</mat-icon>
-        </button>
-        <span>{{ camera?.name || 'Camera ' + cameraId }}</span>
-        <span class="spacer"></span>
+  <mat-toolbar class="view-toolbar">
+    <button mat-icon-button (click)="goBack()">
+      <mat-icon>arrow_back</mat-icon>
+    </button>
+    <span>{{ camera?.name || 'Camera ' + cameraId }}</span>
+    <span class="spacer"></span>
 
-        @if (currentDetection) {
-        <div class="live-stats">
-            <mat-icon>person</mat-icon>
-            <span>{{ currentDetection.count }} persons</span>
-            <span class="separator">|</span>
-            <span class="unique-highlight">{{ currentDetection.todayUniqueCount }} unique today</span>
-        </div>
-        }
-
-        <button mat-icon-button (click)="toggleFullscreen()" matTooltip="Toggle Fullscreen">
-            <mat-icon>{{ isFullscreen ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
-        </button>
-    </mat-toolbar>
-
-    <div class="stream-container">
-        @if (streamUrl) {
-            <img [src]="streamUrl" 
-                 alt="Camera stream" 
-                 (error)="$any($event.target).style.display='none'">
-        } @else {
-            <div class="no-stream">
-                <mat-icon>videocam_off</mat-icon>
-                <p>Loading camera stream...</p>
-            </div>
-        }
-
-        @if (currentDetection) {
-        <div class="info-overlay">
-            <div class="detection-info">
-                <div class="info-row">
-                    <mat-icon>people</mat-icon>
-                    <span>{{ currentDetection.count }} Persons Detected</span>
-                </div>
-                <div class="info-row highlight">
-                    <mat-icon>fingerprint</mat-icon>
-                    <span>{{ currentDetection.todayUniqueCount }} Unique Today</span>
-                </div>
-                <div class="info-row secondary">
-                    <mat-icon>videocam</mat-icon>
-                    <span>{{ currentDetection.uniqueCount }} This Camera</span>
-                </div>
-                <div class="info-row">
-                    <mat-icon>speed</mat-icon>
-                    <span>{{ currentDetection.fps | number:'1.0-0' }} FPS</span>
-                </div>
-                <div class="info-row">
-                    <mat-icon>schedule</mat-icon>
-                    <span>{{ currentDetection.timestamp | date:'HH:mm:ss' }}</span>
-                </div>
-            </div>
-        </div>
-        }
+    @if (currentDetection) {
+    <div class="live-stats">
+      <mat-icon>person</mat-icon>
+      <span>{{ currentDetection.count }} persons</span>
+      <span class="separator">|</span>
+      <span class="unique-highlight">{{ currentDetection.todayUniqueCount }} unique today</span>
     </div>
+    }
+
+    <!-- Stream Status Indicator (NEW) -->
+    <span class="status-indicator"
+          [class.connected]="isConnected"
+          [class.error]="isError"
+          [class.reconnecting]="isReconnecting"
+          [matTooltip]="streamStatus?.stateMessage || 'Unknown'">
+      <mat-icon>{{ isConnected ? 'wifi' : (isReconnecting ? 'sync' : 'wifi_off') }}</mat-icon>
+    </span>
+
+    <!-- Refresh Button (NEW) -->
+    <button mat-icon-button (click)="refreshStream()" matTooltip="Refresh Stream">
+      <mat-icon>refresh</mat-icon>
+    </button>
+
+    <button mat-icon-button (click)="toggleFullscreen()" matTooltip="Toggle Fullscreen">
+      <mat-icon>{{ isFullscreen ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <div class="stream-container">
+    @if (streamUrl) {
+    <img [src]="streamUrl"
+         alt="Camera stream"
+         (error)="isStreamStale = true"
+         (load)="isStreamStale = false">
+    } @else {
+    <div class="no-stream">
+      <mat-icon>videocam_off</mat-icon>
+      <p>Loading camera stream...</p>
+    </div>
+    }
+
+    <!-- Stream Status Overlay (NEW) -->
+    @if (showOverlay) {
+    <div class="stream-overlay">
+      <div class="overlay-content" [class.error]="isError" [class.warning]="isStreamStale && !isError">
+        @if (isReconnecting) {
+        <mat-spinner diameter="48"></mat-spinner>
+        } @else {
+        <mat-icon class="overlay-icon">{{ overlayIcon }}</mat-icon>
+        }
+        <span class="overlay-message">{{ overlayMessage }}</span>
+        @if (streamStatus && isReconnecting) {
+        <div class="reconnect-info">
+          <small>Attempt {{ streamStatus.reconnectAttempt }} of {{ streamStatus.maxReconnectAttempts }}</small>
+        </div>
+        }
+        @if (isError || isStreamStale) {
+        <button mat-raised-button color="primary" (click)="refreshStream()" class="refresh-button">
+          <mat-icon>refresh</mat-icon>
+          Try Again
+        </button>
+        }
+      </div>
+    </div>
+    }
+
+    @if (currentDetection) {
+    <div class="info-overlay">
+      <div class="detection-info">
+        <div class="info-row">
+          <mat-icon>people</mat-icon>
+          <span>{{ currentDetection.count }} Persons Detected</span>
+        </div>
+        <div class="info-row highlight">
+          <mat-icon>fingerprint</mat-icon>
+          <span>{{ currentDetection.todayUniqueCount }} Unique Today</span>
+        </div>
+        <div class="info-row secondary">
+          <mat-icon>videocam</mat-icon>
+          <span>{{ currentDetection.uniqueCount }} This Camera</span>
+        </div>
+        <div class="info-row">
+          <mat-icon>speed</mat-icon>
+          <span>{{ currentDetection.fps | number:'1.0-0' }} FPS</span>
+        </div>
+        <div class="info-row">
+          <mat-icon>schedule</mat-icon>
+          <span>{{ currentDetection.timestamp | date:'HH:mm:ss' }}</span>
+        </div>
+      </div>
+    </div>
+    }
+  </div>
 </div>

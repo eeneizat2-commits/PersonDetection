@@ -100,3 +100,23 @@ export interface GlobalStats {
     confirmedCount: number;
     timestamp: Date;
 }
+export enum StreamConnectionState {
+  Disconnected = 0,
+  Connecting = 1,
+  Connected = 2,
+  Reconnecting = 3,
+  Error = 4,
+  Stopped = 5
+}
+
+export interface StreamStatusUpdate {
+  cameraId: number;
+  state: StreamConnectionState;
+  stateName: string;
+  stateMessage: string;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
+  timestamp: string;
+  fps?: number;
+  consecutiveErrors: number;
+}

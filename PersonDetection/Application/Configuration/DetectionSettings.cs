@@ -359,7 +359,6 @@ namespace PersonDetection.Application.Configuration
         public int TargetFps { get; set; } = 25;
         public int ReIdEveryNFrames { get; set; } = 1;
         public int ReconnectDelayMs { get; set; } = 3000;
-        public int MaxReconnectAttempts { get; set; } = 5;
         public int JpegQuality { get; set; } = 80;
         public int ProcessingIntervalMs { get; set; } = 40;
         public int DetectionIntervalMs { get; set; } = 50;
@@ -377,6 +376,59 @@ namespace PersonDetection.Application.Configuration
         public int OverlayThickness { get; set; } = 2;
         public bool ShowConfidence { get; set; } = true;
         public bool ShowTrackId { get; set; } = true;
+
+
+        // ADD these properties to your existing StreamingSettings class
+
+        /// <summary>
+        /// Maximum consecutive frame read errors before considering stream disconnected
+        /// </summary>
+        public int MaxConsecutiveFrameErrors { get; set; } = 30;
+
+        /// <summary>
+        /// Enable automatic reconnection when stream disconnects during operation
+        /// </summary>
+        public bool EnableAutoReconnect { get; set; } = true;
+
+        /// <summary>
+        /// Maximum number of reconnection attempts (0 = unlimited)
+        /// </summary>
+        public int MaxReconnectAttempts { get; set; } = 5;
+
+        /// <summary>
+        /// Initial delay before first reconnection attempt (ms)
+        /// </summary>
+        public int InitialReconnectDelayMs { get; set; } = 1000;
+
+        /// <summary>
+        /// Maximum delay between reconnection attempts (ms)
+        /// </summary>
+        public int MaxReconnectDelayMs { get; set; } = 30000;
+
+        /// <summary>
+        /// Multiplier for exponential backoff
+        /// </summary>
+        public double ReconnectBackoffMultiplier { get; set; } = 2.0;
+
+        /// <summary>
+        /// Interval for stream health check notifications (ms)
+        /// </summary>
+        public int StreamHealthCheckIntervalMs { get; set; } = 5000;
+
+        /// <summary>
+        /// Timeout for initial connection (ms)
+        /// </summary>
+        public int ConnectionTimeoutMs { get; set; } = 10000;
+
+        /// <summary>
+        /// Timeout for frame read operations (ms)
+        /// </summary>
+        public int ReadTimeoutMs { get; set; } = 5000;
+
+        /// <summary>
+        /// Notify frontend clients when stream status changes
+        /// </summary>
+        public bool NotifyClientsOnStatusChange { get; set; } = true;
     }
 
 
@@ -387,5 +439,20 @@ namespace PersonDetection.Application.Configuration
         public int MaximumReceiveMessageSize { get; set; } = 102400;
         public int KeepAliveIntervalSeconds { get; set; } = 15;
         public int ClientTimeoutSeconds { get; set; } = 30;
+
+        /// <summary>
+        /// Reconnection intervals for client (ms)
+        /// </summary>
+        public int[] ReconnectIntervalsMs { get; set; } = { 0, 2000, 5000, 10000, 30000 };
+
+        /// <summary>
+        /// Maximum reconnection attempts for client
+        /// </summary>
+        public int MaxReconnectAttempts { get; set; } = 10;
+
+        /// <summary>
+        /// Fallback delay when all retry intervals exhausted (ms)
+        /// </summary>
+        public int FallbackReconnectDelayMs { get; set; } = 5000;
     }
 }

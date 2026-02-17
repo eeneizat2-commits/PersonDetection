@@ -1,9 +1,6 @@
 ﻿// PersonDetection.Infrastructure/Streaming/CameraStreamProcessor.cs
 namespace PersonDetection.Infrastructure.Streaming
 {
-    using System.Diagnostics;
-    using System.Runtime.CompilerServices;
-    using System.Threading.Channels;
     using Microsoft.AspNetCore.SignalR;
     using Microsoft.EntityFrameworkCore;
     using Microsoft.Extensions.DependencyInjection;
@@ -12,6 +9,7 @@ namespace PersonDetection.Infrastructure.Streaming
     using OpenCvSharp;
     using PersonDetection.API.Hubs;
     using PersonDetection.Application.Configuration;
+    using PersonDetection.Application.DTOs;
     using PersonDetection.Application.Interfaces;
     using PersonDetection.Domain.Entities;
     using PersonDetection.Domain.Services;
@@ -19,7 +17,9 @@ namespace PersonDetection.Infrastructure.Streaming
     using PersonDetection.Infrastructure.Context;
     using PersonDetection.Infrastructure.Detection;
     using PersonDetection.Infrastructure.ReId;
-
+    using System.Diagnostics;
+    using System.Runtime.CompilerServices;
+    using System.Threading.Channels;
     using CvPoint = OpenCvSharp.Point;
     using CvSize = OpenCvSharp.Size;
 
@@ -74,6 +74,12 @@ namespace PersonDetection.Infrastructure.Streaming
         private static readonly Scalar _white = new(255, 255, 255);
         private static readonly Scalar _green = new(0, 255, 0);
         private static readonly Scalar _black = new(0, 0, 0);
+
+
+        private volatile StreamConnectionState _connectionState = StreamConnectionState.Disconnected;
+        private int _reconnectAttempt = 0;
+        private DateTime _lastHealthNotification = DateTime.MinValue;
+        public StreamConnectionState ConnectionState => _connectionState;
 
         static CameraStreamProcessor()
         {
@@ -210,6 +216,10 @@ namespace PersonDetection.Infrastructure.Streaming
         public async Task<bool> ConnectAsync(string url, CancellationToken ct = default)
         {
             StreamUrl = url;
+            _reconnectAttempt = 0;
+
+            await UpdateConnectionStateAsync(StreamConnectionState.Connecting,
+                "Initiating connection", ct);
 
             for (int attempt = 1; attempt <= _streamingSettings.MaxReconnectAttempts; attempt++)
             {
@@ -222,7 +232,12 @@ namespace PersonDetection.Infrastructure.Streaming
                     if (_isConnected)
                     {
                         _identityMatcher.SetFrameDimensions(_frameWidth, _frameHeight);
+
+                        await UpdateConnectionStateAsync(StreamConnectionState.Connected,
+                            "Connected successfully", ct);
+
                         StartAllTasks();
+
                         _logger.LogInformation("✅ Camera {Id} connected to {Url} ({W}x{H})",
                             _cameraId, url, _frameWidth, _frameHeight);
                         return true;
@@ -236,9 +251,13 @@ namespace PersonDetection.Infrastructure.Streaming
 
                 if (attempt < _streamingSettings.MaxReconnectAttempts)
                 {
-                    await Task.Delay(_streamingSettings.ReconnectDelayMs, ct);
+                    var delay = CalculateReconnectDelay(attempt);
+                    await Task.Delay(delay, ct);
                 }
             }
+
+            await UpdateConnectionStateAsync(StreamConnectionState.Error,
+                "Failed to connect after all attempts", ct);
 
             _logger.LogError("❌ Failed to connect to camera {Id}", _cameraId);
             return false;
@@ -357,15 +376,30 @@ namespace PersonDetection.Infrastructure.Streaming
         {
             var frameInterval = TimeSpan.FromMilliseconds(1000.0 / _streamingSettings.TargetFps);
             int consecutiveErrors = 0;
-            const int MaxConsecutiveErrors = 30;
 
             _logger.LogInformation("🎥 Capture loop started for camera {Id}", _cameraId);
 
             while (!ct.IsCancellationRequested && !_disposed)
             {
-                if (!_isConnected)
+                // Check if we need to reconnect
+                if (!_isConnected || _connectionState == StreamConnectionState.Reconnecting)
                 {
-                    break;
+                    if (_streamingSettings.EnableAutoReconnect)
+                    {
+                        var reconnected = await TryReconnectAsync(ct);
+                        if (!reconnected)
+                        {
+                            await UpdateConnectionStateAsync(StreamConnectionState.Error,
+                                "Max reconnection attempts reached", ct);
+                            break;
+                        }
+                        consecutiveErrors = 0;
+                        continue;
+                    }
+                    else
+                    {
+                        break;
+                    }
                 }
 
                 try
@@ -373,8 +407,10 @@ namespace PersonDetection.Infrastructure.Streaming
                     var startTime = DateTime.UtcNow;
                     byte[]? jpegData = null;
 
-                    if (!await _captureLock.WaitAsync(1000, ct))
+                    if (!await _captureLock.WaitAsync(_streamingSettings.ReadTimeoutMs, ct))
                     {
+                        consecutiveErrors++;
+                        await CheckHealthAndNotifyAsync(ct);
                         continue;
                     }
 
@@ -383,11 +419,18 @@ namespace PersonDetection.Infrastructure.Streaming
                         if (_capture == null || !_capture.IsOpened())
                         {
                             consecutiveErrors++;
-                            if (consecutiveErrors > MaxConsecutiveErrors)
+
+                            if (consecutiveErrors > _streamingSettings.MaxConsecutiveFrameErrors)
                             {
+                                _logger.LogWarning("⚠️ Camera {Id}: Max consecutive errors ({Max}) reached",
+                                    _cameraId, _streamingSettings.MaxConsecutiveFrameErrors);
+
                                 _isConnected = false;
-                                break;
+                                await UpdateConnectionStateAsync(StreamConnectionState.Reconnecting,
+                                    "Stream lost, attempting reconnection", ct);
+                                continue;
                             }
+
                             await Task.Delay(100, ct);
                             continue;
                         }
@@ -398,6 +441,15 @@ namespace PersonDetection.Infrastructure.Streaming
                         if (!success || frame.Empty())
                         {
                             consecutiveErrors++;
+
+                            if (consecutiveErrors > _streamingSettings.MaxConsecutiveFrameErrors)
+                            {
+                                _logger.LogWarning("⚠️ Camera {Id}: Cannot read frames, triggering reconnect", _cameraId);
+                                _isConnected = false;
+                                await UpdateConnectionStateAsync(StreamConnectionState.Reconnecting,
+                                    "Frame read failed, reconnecting", ct);
+                            }
+
                             await Task.Delay(50, ct);
                             continue;
                         }
@@ -413,8 +465,8 @@ namespace PersonDetection.Infrastructure.Streaming
 
                         Cv2.ImEncode(".jpg", frame, out jpegData, new[]
                         {
-                            (int)ImwriteFlags.JpegQuality, _streamingSettings.JpegQuality
-                        });
+                    (int)ImwriteFlags.JpegQuality, _streamingSettings.JpegQuality
+                });
                     }
                     finally
                     {
@@ -425,6 +477,8 @@ namespace PersonDetection.Infrastructure.Streaming
                     {
                         ProcessFrame(jpegData);
                     }
+
+                    await CheckHealthAndNotifyAsync(ct);
 
                     var elapsed = DateTime.UtcNow - startTime;
                     if (elapsed < frameInterval)
@@ -438,15 +492,19 @@ namespace PersonDetection.Infrastructure.Streaming
                 {
                     _logger.LogError(ex, "Capture error");
                     consecutiveErrors++;
-                    if (consecutiveErrors > MaxConsecutiveErrors)
+
+                    if (consecutiveErrors > _streamingSettings.MaxConsecutiveFrameErrors)
                     {
                         _isConnected = false;
-                        break;
+                        await UpdateConnectionStateAsync(StreamConnectionState.Reconnecting,
+                            $"Exception occurred: {ex.Message}", ct);
                     }
+
                     try { await Task.Delay(100, ct); } catch { break; }
                 }
             }
 
+            await UpdateConnectionStateAsync(StreamConnectionState.Stopped, "Capture loop ended", ct);
             _logger.LogInformation("🛑 Capture loop ended for camera {Id}", _cameraId);
         }
 
@@ -1021,6 +1079,156 @@ namespace PersonDetection.Infrastructure.Streaming
 
         #endregion
 
+        #region Reconnection & Health
+
+        private async Task<bool> TryReconnectAsync(CancellationToken ct)
+        {
+            var maxAttempts = _streamingSettings.MaxReconnectAttempts;
+
+            while ((maxAttempts == 0 || _reconnectAttempt < maxAttempts) && !ct.IsCancellationRequested)
+            {
+                _reconnectAttempt++;
+
+                var delay = CalculateReconnectDelay(_reconnectAttempt);
+
+                _logger.LogInformation(
+                    "🔄 Camera {Id}: Reconnection attempt {Attempt}/{Max} in {Delay}ms",
+                    _cameraId, _reconnectAttempt,
+                    maxAttempts == 0 ? "∞" : maxAttempts.ToString(),
+                    delay);
+
+                await UpdateConnectionStateAsync(StreamConnectionState.Reconnecting,
+                    $"Reconnecting (attempt {_reconnectAttempt})", ct);
+
+                await Task.Delay(delay, ct);
+
+                try
+                {
+                    await CleanupCaptureAsync();
+
+                    _isConnected = await ConnectWithOpenCvAsync(StreamUrl, ct);
+
+                    if (_isConnected)
+                    {
+                        _reconnectAttempt = 0;
+
+                        await UpdateConnectionStateAsync(StreamConnectionState.Connected,
+                            "Reconnected successfully", ct);
+
+                        _logger.LogInformation(
+                            "✅ Camera {Id}: Reconnected successfully",
+                            _cameraId);
+
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Camera {Id}: Reconnection attempt {Attempt} failed",
+                        _cameraId, _reconnectAttempt);
+                }
+            }
+
+            _logger.LogError("❌ Camera {Id}: All reconnection attempts exhausted", _cameraId);
+            return false;
+        }
+
+        private int CalculateReconnectDelay(int attempt)
+        {
+            var baseDelay = _streamingSettings.InitialReconnectDelayMs;
+            var multiplier = _streamingSettings.ReconnectBackoffMultiplier;
+            var maxDelay = _streamingSettings.MaxReconnectDelayMs;
+
+            var delay = (int)(baseDelay * Math.Pow(multiplier, attempt - 1));
+
+            return Math.Min(delay, maxDelay);
+        }
+
+        private async Task CleanupCaptureAsync()
+        {
+            await _captureLock.WaitAsync();
+            try
+            {
+                if (_capture != null)
+                {
+                    try
+                    {
+                        _capture.Release();
+                        _capture.Dispose();
+                    }
+                    catch { }
+                    _capture = null;
+                }
+            }
+            finally
+            {
+                _captureLock.Release();
+            }
+        }
+
+        private async Task UpdateConnectionStateAsync(
+            StreamConnectionState newState,
+            string message,
+            CancellationToken ct)
+        {
+            var previousState = _connectionState;
+            _connectionState = newState;
+
+            if (!_streamingSettings.NotifyClientsOnStatusChange)
+                return;
+
+            if (previousState == newState &&
+                (DateTime.UtcNow - _lastHealthNotification).TotalMilliseconds < _streamingSettings.StreamHealthCheckIntervalMs)
+                return;
+
+            try
+            {
+                var status = new
+                {
+                    cameraId = _cameraId,
+                    state = (int)newState,
+                    stateName = newState.ToString(),
+                    stateMessage = message,
+                    reconnectAttempt = _reconnectAttempt,
+                    maxReconnectAttempts = _streamingSettings.MaxReconnectAttempts,
+                    timestamp = DateTime.UtcNow,
+                    fps = _currentFps,
+                    consecutiveErrors = 0
+                };
+
+                await _hubContext.Clients.Group($"camera_{_cameraId}")
+                    .SendAsync("StreamStatusUpdate", status, ct);
+
+                await _hubContext.Clients.Group("stream_status")
+                    .SendAsync("StreamStatusUpdate", status, ct);
+
+                _lastHealthNotification = DateTime.UtcNow;
+
+                _logger.LogDebug("📡 Camera {Id}: Status → {State} ({Message})",
+                    _cameraId, newState, message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to notify stream status change");
+            }
+        }
+
+        private async Task CheckHealthAndNotifyAsync(CancellationToken ct)
+        {
+            if (!_streamingSettings.NotifyClientsOnStatusChange)
+                return;
+
+            var timeSinceLastNotify = (DateTime.UtcNow - _lastHealthNotification).TotalMilliseconds;
+
+            if (timeSinceLastNotify >= _streamingSettings.StreamHealthCheckIntervalMs)
+            {
+                await UpdateConnectionStateAsync(_connectionState,
+                    _isConnected ? "Stream healthy" : "Stream unhealthy", ct);
+            }
+        }
+
+        #endregion
+
         #region Database Save Loop
 
         private async Task BatchDatabaseSaveLoop(CancellationToken ct)
@@ -1243,6 +1451,10 @@ namespace PersonDetection.Infrastructure.Streaming
 
             _logger.LogInformation("⏹️ Disconnecting camera {Id}...", _cameraId);
             _isConnected = false;
+            _connectionState = StreamConnectionState.Stopped;
+
+            _ = UpdateConnectionStateAsync(StreamConnectionState.Stopped,
+                "Manually disconnected", CancellationToken.None);
 
             try { _cts?.Cancel(); } catch { }
 
@@ -1281,6 +1493,7 @@ namespace PersonDetection.Infrastructure.Streaming
             catch { }
 
             _stableTracks.Clear();
+            _reconnectAttempt = 0;
 
             _logger.LogInformation("✅ Camera {Id} disconnected", _cameraId);
         }

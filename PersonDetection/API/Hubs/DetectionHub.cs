@@ -53,5 +53,18 @@
             _logger.LogInformation("Client {ConnectionId} unsubscribed from video job {JobId}",
                 Context.ConnectionId, jobId);
         }
+        public async Task SubscribeToStreamStatus()
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, "stream_status");
+            _logger.LogInformation("Client {ConnectionId} subscribed to stream status",
+                Context.ConnectionId);
+        }
+
+        public async Task UnsubscribeFromStreamStatus()
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, "stream_status");
+            _logger.LogInformation("Client {ConnectionId} unsubscribed from stream status",
+                Context.ConnectionId);
+        }
     }
 }

@@ -134,3 +134,114 @@
         height: 14px;
     }
 }
+// ADD these to your existing camera-view.component.scss
+
+// Status Indicator in Toolbar
+.status-indicator {
+  display: flex;
+  align-items: center;
+  margin-right: 8px;
+  padding: 4px;
+  border-radius: 50%;
+
+  mat-icon {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+  }
+
+  &.connected mat-icon {
+    color: #4caf50;
+  }
+
+  &.error mat-icon {
+    color: #f44336;
+  }
+
+  &.reconnecting mat-icon {
+    color: #ff9800;
+    animation: spin 1s linear infinite;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+// Stream Status Overlay
+.stream-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px 48px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(4px);
+  text-align: center;
+  color: white;
+
+  &.error {
+    background: rgba(244, 67, 54, 0.2);
+    border: 1px solid rgba(244, 67, 54, 0.4);
+
+    .overlay-icon {
+      color: #f44336;
+    }
+  }
+
+  &.warning {
+    background: rgba(255, 152, 0, 0.2);
+    border: 1px solid rgba(255, 152, 0, 0.4);
+
+    .overlay-icon {
+      color: #ff9800;
+    }
+  }
+}
+
+.overlay-icon {
+  font-size: 56px;
+  width: 56px;
+  height: 56px;
+  color: #fff;
+}
+
+.overlay-message {
+  font-size: 18px;
+  font-weight: 500;
+  color: white;
+}
+
+.reconnect-info {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+}
+
+.refresh-button {
+  margin-top: 8px;
+
+  mat-icon {
+    margin-right: 4px;
+  }
+}
