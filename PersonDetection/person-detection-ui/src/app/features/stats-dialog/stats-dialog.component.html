@@ -1,190 +1,193 @@
-<!-- src/app/features/stats-dialog/stats-dialog.component.html -->
-<div class="stats-dialog-wrapper" (click)="onDialogClick($event)">
-  <h2 mat-dialog-title>
-    <mat-icon>analytics</mat-icon>
-    Historical Statistics
-  </h2>
+<h2 mat-dialog-title>
+  <mat-icon>analytics</mat-icon>
+  Historical Statistics
+</h2>
 
-  <mat-dialog-content>
-    <!-- Period Selection -->
-    <div class="period-selector">
+<mat-dialog-content>
+  <!-- Period Selection -->
+  <div class="period-selector">
+    <mat-form-field appearance="outline">
+      <mat-label>Time Period</mat-label>
+      <mat-select [(value)]="selectedPeriod" (selectionChange)="onPeriodChange()">
+        <mat-option value="1">Today</mat-option>
+        <mat-option value="3">Last 3 Days</mat-option>
+        <mat-option value="4">Last 4 Days</mat-option>
+        <mat-option value="7">Last 7 Days</mat-option>
+        <mat-option value="14">Last 14 Days</mat-option>
+        <mat-option value="30">Last 30 Days</mat-option>
+        <mat-option value="custom">Custom Range</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <!-- Custom Date Range -->
+    @if (selectedPeriod === 'custom') {
+    <div class="custom-range">
       <mat-form-field appearance="outline">
-        <mat-label>Time Period</mat-label>
-        <mat-select [(value)]="selectedPeriod" (selectionChange)="onPeriodChange()">
-          <mat-option value="1">Today</mat-option>
-          <mat-option value="3">Last 3 Days</mat-option>
-          <mat-option value="4">Last 4 Days</mat-option>
-          <mat-option value="7">Last 7 Days</mat-option>
-          <mat-option value="14">Last 14 Days</mat-option>
-          <mat-option value="30">Last 30 Days</mat-option>
-          <mat-option value="custom">Custom Range</mat-option>
-        </mat-select>
+        <mat-label>Start Date</mat-label>
+        <input matInput [matDatepicker]="startPicker" [(ngModel)]="customStartDate" readonly
+          (click)="startPicker.open()">
+        <button matSuffix mat-icon-button type="button" (click)="startPicker.open()">
+          <mat-icon>calendar_today</mat-icon>
+        </button>
+        <mat-datepicker #startPicker></mat-datepicker>
       </mat-form-field>
 
-      <!-- Custom Date Range -->
-      @if (selectedPeriod === 'custom') {
-        <div class="custom-range">
-          <mat-form-field appearance="outline">
-            <mat-label>Start Date</mat-label>
-            <input matInput [matDatepicker]="startPicker" [(ngModel)]="customStartDate">
-            <mat-datepicker-toggle matSuffix [for]="startPicker"></mat-datepicker-toggle>
-            <mat-datepicker #startPicker></mat-datepicker>
-          </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>End Date</mat-label>
+        <input matInput [matDatepicker]="endPicker" [(ngModel)]="customEndDate" readonly (click)="endPicker.open()">
+        <button matSuffix mat-icon-button type="button" (click)="endPicker.open()">
+          <mat-icon>calendar_today</mat-icon>
+        </button>
+        <mat-datepicker #endPicker></mat-datepicker>
+      </mat-form-field>
 
-          <mat-form-field appearance="outline">
-            <mat-label>End Date</mat-label>
-            <input matInput [matDatepicker]="endPicker" [(ngModel)]="customEndDate">
-            <mat-datepicker-toggle matSuffix [for]="endPicker"></mat-datepicker-toggle>
-            <mat-datepicker #endPicker></mat-datepicker>
-          </mat-form-field>
+      <button mat-raised-button color="primary" (click)="applyCustomRange()"
+        [disabled]="!customStartDate || !customEndDate">
+        Apply
+      </button>
+    </div>
+    }
+  </div>
 
-          <button mat-raised-button color="primary" (click)="applyCustomRange()"
-                  [disabled]="!customStartDate || !customEndDate">
-            Apply
-          </button>
+  <!-- Loading Spinner -->
+  @if (loading) {
+  <div class="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading statistics...</span>
+  </div>
+  }
+
+  <!-- Error Message -->
+  @if (error) {
+  <div class="error">
+    <mat-icon>error</mat-icon>
+    {{ error }}
+  </div>
+  }
+
+  <!-- Stats Content -->
+  @if (stats && !loading) {
+  <div class="stats-content">
+    <!-- Summary Cards -->
+    <div class="summary-cards">
+      <div class="stat-card total">
+        <div class="stat-icon">
+          <mat-icon>people</mat-icon>
         </div>
-      }
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.totalUniquePersons | number }}</span>
+          <span class="stat-label">Total Unique</span>
+        </div>
+      </div>
+
+      <div class="stat-card detections">
+        <div class="stat-icon">
+          <mat-icon>visibility</mat-icon>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.totalDetections | number }}</span>
+          <span class="stat-label">Detections</span>
+        </div>
+      </div>
+
+      <div class="stat-card days">
+        <div class="stat-icon">
+          <mat-icon>calendar_today</mat-icon>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.totalDays }}</span>
+          <span class="stat-label">Days</span>
+        </div>
+      </div>
+
+      <div class="stat-card average">
+        <div class="stat-icon">
+          <mat-icon>trending_up</mat-icon>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.totalDays > 0 ? (stats.totalUniquePersons / stats.totalDays |
+            number:'1.0-0') : 0 }}</span>
+          <span class="stat-label">Daily Avg</span>
+        </div>
+      </div>
     </div>
 
-    <!-- Loading Spinner -->
-    @if (loading) {
-      <div class="loading">
-        <mat-spinner diameter="40"></mat-spinner>
-        <span>Loading statistics...</span>
-      </div>
-    }
+    <!-- Date Range Display -->
+    <div class="date-range">
+      <mat-chip-set>
+        <mat-chip>
+          <mat-icon>date_range</mat-icon>
+          {{ formatDate(stats.startDate) }} - {{ formatDate(stats.endDate) }}
+        </mat-chip>
+      </mat-chip-set>
+    </div>
 
-    <!-- Error Message -->
-    @if (error) {
-      <div class="error">
-        <mat-icon>error</mat-icon>
-        {{ error }}
-      </div>
-    }
+    <!-- Daily Breakdown Table -->
+    <h3>Daily Breakdown</h3>
+    <div class="table-container">
+      <table mat-table [dataSource]="stats.dailyStats" class="daily-table">
+        <ng-container matColumnDef="date">
+          <th mat-header-cell *matHeaderCellDef>Date</th>
+          <td mat-cell *matCellDef="let row">{{ formatDate(row.date) }}</td>
+        </ng-container>
 
-    <!-- Stats Content -->
-    @if (stats && !loading) {
-      <div class="stats-content">
-        <!-- Summary Cards -->
-        <div class="summary-cards">
-          <div class="stat-card total">
-            <div class="stat-icon">
-              <mat-icon>people</mat-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.totalUniquePersons | number }}</span>
-              <span class="stat-label">Total Unique</span>
-            </div>
+        <ng-container matColumnDef="dayName">
+          <th mat-header-cell *matHeaderCellDef>Day</th>
+          <td mat-cell *matCellDef="let row">{{ row.dayName }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="uniquePersons">
+          <th mat-header-cell *matHeaderCellDef>Unique</th>
+          <td mat-cell *matCellDef="let row">
+            <span class="highlight">{{ row.uniquePersons | number }}</span>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="totalDetections">
+          <th mat-header-cell *matHeaderCellDef>Detections</th>
+          <td mat-cell *matCellDef="let row">{{ row.totalDetections | number }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="peakHour">
+          <th mat-header-cell *matHeaderCellDef>Peak Hour</th>
+          <td mat-cell *matCellDef="let row">
+            {{ formatHour(row.peakHour) }}
+            <small>({{ row.peakHourCount }})</small>
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+      </table>
+    </div>
+
+    <!-- Camera Breakdown -->
+    @if (stats.cameraBreakdown && stats.cameraBreakdown.length > 0) {
+    <div class="camera-breakdown">
+      <h3>Camera Breakdown</h3>
+      <div class="camera-cards">
+        @for (cam of stats.cameraBreakdown; track cam.cameraId) {
+        <div class="camera-card">
+          <div class="camera-name">
+            <mat-icon>videocam</mat-icon>
+            <span>{{ cam.cameraName }}</span>
           </div>
-
-          <div class="stat-card detections">
-            <div class="stat-icon">
-              <mat-icon>visibility</mat-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.totalDetections | number }}</span>
-              <span class="stat-label">Detections</span>
-            </div>
-          </div>
-
-          <div class="stat-card days">
-            <div class="stat-icon">
-              <mat-icon>calendar_today</mat-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.totalDays }}</span>
-              <span class="stat-label">Days</span>
-            </div>
-          </div>
-
-          <div class="stat-card average">
-            <div class="stat-icon">
-              <mat-icon>trending_up</mat-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.totalDays > 0 ? (stats.totalUniquePersons / stats.totalDays | number:'1.0-0') : 0 }}</span>
-              <span class="stat-label">Daily Avg</span>
-            </div>
+          <div class="camera-stats">
+            {{ cam.totalDetections | number }} detections
           </div>
         </div>
-
-        <!-- Date Range Display -->
-        <div class="date-range">
-          <mat-chip-set>
-            <mat-chip>
-              <mat-icon>date_range</mat-icon>
-              {{ formatDate(stats.startDate) }} - {{ formatDate(stats.endDate) }}
-            </mat-chip>
-          </mat-chip-set>
-        </div>
-
-        <!-- Daily Breakdown Table -->
-        <h3>Daily Breakdown</h3>
-        <div class="table-container">
-          <table mat-table [dataSource]="stats.dailyStats" class="daily-table">
-            <ng-container matColumnDef="date">
-              <th mat-header-cell *matHeaderCellDef>Date</th>
-              <td mat-cell *matCellDef="let row">{{ formatDate(row.date) }}</td>
-            </ng-container>
-
-            <ng-container matColumnDef="dayName">
-              <th mat-header-cell *matHeaderCellDef>Day</th>
-              <td mat-cell *matCellDef="let row">{{ row.dayName }}</td>
-            </ng-container>
-
-            <ng-container matColumnDef="uniquePersons">
-              <th mat-header-cell *matHeaderCellDef>Unique</th>
-              <td mat-cell *matCellDef="let row">
-                <span class="highlight">{{ row.uniquePersons | number }}</span>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="totalDetections">
-              <th mat-header-cell *matHeaderCellDef>Detections</th>
-              <td mat-cell *matCellDef="let row">{{ row.totalDetections | number }}</td>
-            </ng-container>
-
-            <ng-container matColumnDef="peakHour">
-              <th mat-header-cell *matHeaderCellDef>Peak Hour</th>
-              <td mat-cell *matCellDef="let row">
-                {{ formatHour(row.peakHour) }}
-                <small>({{ row.peakHourCount }})</small>
-              </td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
-          </table>
-        </div>
-
-        <!-- Camera Breakdown -->
-        @if (stats.cameraBreakdown && stats.cameraBreakdown.length > 0) {
-          <div class="camera-breakdown">
-            <h3>Camera Breakdown</h3>
-            <div class="camera-cards">
-              @for (cam of stats.cameraBreakdown; track cam.cameraId) {
-                <div class="camera-card">
-                  <div class="camera-name">
-                    <mat-icon>videocam</mat-icon>
-                    <span>{{ cam.cameraName }}</span>
-                  </div>
-                  <div class="camera-stats">
-                    {{ cam.totalDetections | number }} detections
-                  </div>
-                </div>
-              }
-            </div>
-          </div>
         }
       </div>
+    </div>
     }
-  </mat-dialog-content>
+  </div>
+  }
+</mat-dialog-content>
 
-  <mat-dialog-actions align="end">
-    <button mat-button (click)="close()">Close</button>
-    <button mat-raised-button color="primary" (click)="loadStats()" [disabled]="loading">
-      <mat-icon>refresh</mat-icon>
-      Refresh
-    </button>
-  </mat-dialog-actions>
-</div>
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">Close</button>
+  <button mat-raised-button color="primary" (click)="loadStats()" [disabled]="loading">
+    <mat-icon>refresh</mat-icon>
+    Refresh
+  </button>
+</mat-dialog-actions>

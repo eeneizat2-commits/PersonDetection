@@ -1,15 +1,13 @@
-// src/app/features/stats-dialog/stats-dialog.component.ts
-import { Component, OnInit, OnDestroy, Inject, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, Inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MAT_DIALOG_DATA, MatDialogRef, MatDialogModule } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatTabsModule } from '@angular/material/tabs';
 import { MatTableModule } from '@angular/material/table';
 import { MatSelectModule } from '@angular/material/select';
 import { MatDatepickerModule } from '@angular/material/datepicker';
-import { MatNativeDateModule } from '@angular/material/core';
+import { MatNativeDateModule, provideNativeDateAdapter } from '@angular/material/core';
 import { MatInputModule } from '@angular/material/input';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -26,7 +24,6 @@ import { Subject, takeUntil } from 'rxjs';
     MatDialogModule,
     MatButtonModule,
     MatIconModule,
-    MatTabsModule,
     MatTableModule,
     MatSelectModule,
     MatDatepickerModule,
@@ -36,10 +33,11 @@ import { Subject, takeUntil } from 'rxjs';
     MatProgressSpinnerModule,
     MatChipsModule
   ],
+  providers: [
+    provideNativeDateAdapter()  // ADD THIS - provides date adapter at component level
+  ],
   templateUrl: './stats-dialog.component.html',
-  styleUrls: ['./stats-dialog.component.scss'],
-  // Use OnPush to reduce change detection cycles
-  changeDetection: ChangeDetectionStrategy.OnPush
+  styleUrls: ['./stats-dialog.component.scss']
 })
 export class StatsDialogComponent implements OnInit, OnDestroy {
   stats: HistoricalStats | null = null;
@@ -59,13 +57,7 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     private cdr: ChangeDetectorRef,
     public dialogRef: MatDialogRef<StatsDialogComponent>,
     @Inject(MAT_DIALOG_DATA) public data: { cameraId?: number }
-  ) {
-    // Prevent backdrop click from causing issues
-    this.dialogRef.disableClose = false;
-    
-    // Add class to body to prevent scroll
-    document.body.classList.add('dialog-open');
-  }
+  ) {}
 
   ngOnInit(): void {
     this.loadStats();
@@ -74,9 +66,6 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
-    
-    // Remove body class
-    document.body.classList.remove('dialog-open');
   }
 
   loadStats(): void {
@@ -142,8 +131,8 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     this.dialogRef.close();
   }
 
-  // Prevent event propagation on dialog content
-  onDialogClick(event: Event): void {
-    event.stopPropagation();
+  // Method to manually open datepicker (backup)
+  openDatepicker(picker: any): void {
+    picker.open();
   }
 }

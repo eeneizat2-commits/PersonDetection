@@ -31,43 +31,58 @@ namespace PersonDetection.Application.Queries
             _logger = logger;
         }
 
-        // ★ Using Handle (not HandleAsync) to match your pattern
         public async Task<HistoricalStatsDto> Handle(GetHistoricalStatsQuery query, CancellationToken ct = default)
         {
             using var scope = _serviceProvider.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
-            // Determine date range
-            DateTime endDate = query.EndDate?.Date.AddDays(1) ?? DateTime.UtcNow.Date.AddDays(1);
-            DateTime startDate;
+            // ═══════════════════════════════════════════════════════════════
+            // FIX: Use local date (DateTime.Today) instead of DateTime.UtcNow
+            // ═══════════════════════════════════════════════════════════════
+            var today = DateTime.Today; // Local date, midnight
 
-            if (query.LastDays.HasValue && query.LastDays.Value > 0)
+            DateTime startDate;
+            DateTime endDate;
+
+            if (query.StartDate.HasValue && query.EndDate.HasValue)
             {
-                startDate = DateTime.UtcNow.Date.AddDays(-query.LastDays.Value + 1);
-            }
-            else if (query.StartDate.HasValue)
-            {
+                // Custom range - use the dates as provided (local dates)
                 startDate = query.StartDate.Value.Date;
+                endDate = query.EndDate.Value.Date;
+            }
+            else if (query.LastDays.HasValue && query.LastDays.Value > 0)
+            {
+                // Last N days - include today
+                endDate = today;
+                startDate = today.AddDays(-(query.LastDays.Value - 1));
             }
             else
             {
-                startDate = DateTime.UtcNow.Date.AddDays(-6); // Default: last 7 days
+                // Default: last 7 days including today
+                endDate = today;
+                startDate = today.AddDays(-6);
             }
 
-            _logger.LogInformation("📊 Fetching stats from {Start} to {End}", startDate, endDate);
+            // For querying: startDate is inclusive, endDate needs +1 day for exclusive upper bound
+            var queryStartDate = startDate.Date;
+            var queryEndDate = endDate.Date.AddDays(1); // Exclusive end
+
+            _logger.LogInformation(
+                "📊 Fetching stats: Display [{Start:yyyy-MM-dd}] to [{End:yyyy-MM-dd}], Query [{QStart:yyyy-MM-dd}] to [{QEnd:yyyy-MM-dd})",
+                startDate, endDate, queryStartDate, queryEndDate);
 
             var result = new HistoricalStatsDto
             {
-                StartDate = startDate,
-                EndDate = endDate.AddDays(-1),
-                TotalDays = (int)(endDate - startDate).TotalDays
+                StartDate = startDate,  // Display start date
+                EndDate = endDate,      // Display end date (inclusive)
+                TotalDays = (endDate - startDate).Days + 1  // +1 because both dates are inclusive
             };
 
             // Get unique persons in date range
             var uniquePersonsQuery = context.UniquePersons
                 .Where(p => p.IsActive &&
-                           ((p.FirstSeenAt >= startDate && p.FirstSeenAt < endDate) ||
-                            (p.LastSeenAt >= startDate && p.LastSeenAt < endDate)));
+                           ((p.FirstSeenAt >= queryStartDate && p.FirstSeenAt < queryEndDate) ||
+                            (p.LastSeenAt >= queryStartDate && p.LastSeenAt < queryEndDate)));
 
             if (query.CameraId.HasValue)
             {
@@ -79,7 +94,7 @@ namespace PersonDetection.Application.Queries
 
             // Get total detections
             var detectionsQuery = context.DetectionResults
-                .Where(d => d.Timestamp >= startDate && d.Timestamp < endDate);
+                .Where(d => d.Timestamp >= queryStartDate && d.Timestamp < queryEndDate);
 
             if (query.CameraId.HasValue)
             {
@@ -92,7 +107,7 @@ namespace PersonDetection.Application.Queries
             result.DailyStats = await GetDailyStatsAsync(context, startDate, endDate, query.CameraId, ct);
 
             // Get camera breakdown
-            result.CameraBreakdown = await GetCameraBreakdownAsync(context, startDate, endDate, ct);
+            result.CameraBreakdown = await GetCameraBreakdownAsync(context, queryStartDate, queryEndDate, ct);
 
             return result;
         }
@@ -106,13 +121,15 @@ namespace PersonDetection.Application.Queries
         {
             var dailyStats = new List<DailyStatsDto>();
 
-            for (var date = startDate; date < endDate; date = date.AddDays(1))
+            // Iterate through each day INCLUSIVE of both start and end dates
+            for (var date = startDate.Date; date <= endDate.Date; date = date.AddDays(1))
             {
-                var nextDate = date.AddDays(1);
+                var dayStart = date;
+                var dayEnd = date.AddDays(1); // Exclusive end for this day
 
                 // Unique persons first seen on this day
                 var uniqueQuery = context.UniquePersons
-                    .Where(p => p.IsActive && p.FirstSeenAt >= date && p.FirstSeenAt < nextDate);
+                    .Where(p => p.IsActive && p.FirstSeenAt >= dayStart && p.FirstSeenAt < dayEnd);
 
                 if (cameraId.HasValue)
                 {
@@ -123,7 +140,7 @@ namespace PersonDetection.Application.Queries
 
                 // Total detections for this day
                 var detectionsQuery = context.DetectionResults
-                    .Where(d => d.Timestamp >= date && d.Timestamp < nextDate);
+                    .Where(d => d.Timestamp >= dayStart && d.Timestamp < dayEnd);
 
                 if (cameraId.HasValue)
                 {
@@ -150,7 +167,7 @@ namespace PersonDetection.Application.Queries
                 });
             }
 
-            return dailyStats;
+            return dailyStats.OrderBy(d => d.Date).ToList();
         }
 
         private async Task<List<CameraBreakdownDto>> GetCameraBreakdownAsync(
@@ -159,7 +176,6 @@ namespace PersonDetection.Application.Queries
             DateTime endDate,
             CancellationToken ct)
         {
-            // Get camera stats
             var cameraStats = await context.DetectionResults
                 .Where(d => d.Timestamp >= startDate && d.Timestamp < endDate)
                 .GroupBy(d => d.CameraId)
@@ -171,10 +187,8 @@ namespace PersonDetection.Application.Queries
                 })
                 .ToListAsync(ct);
 
-            // Get camera names
             var cameraIds = cameraStats.Select(c => c.CameraId).ToList();
 
-            // ★ FIX: Use Cameras (not CameraConfigs)
             var cameras = await context.Cameras
                 .Where(c => cameraIds.Contains(c.Id))
                 .Select(c => new { c.Id, c.Name })
@@ -190,4 +204,4 @@ namespace PersonDetection.Application.Queries
             return cameraStats.OrderByDescending(c => c.TotalDetections).ToList();
         }
     }
-    }
+}

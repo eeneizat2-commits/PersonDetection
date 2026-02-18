@@ -50,14 +50,16 @@ namespace PersonDetection.API.Controllers
         /// </summary>
         [HttpGet("quick/{period}")]
         public async Task<ActionResult<HistoricalStatsDto>> GetQuickStats(
-            [FromRoute] string period,
-            [FromQuery] int? cameraId = null,
-            CancellationToken ct = default)
+      [FromRoute] string period,
+      [FromQuery] int? cameraId = null,
+      CancellationToken ct = default)
         {
+            var today = DateTime.Today; // Use local date
+
             int days = period.ToLower() switch
             {
                 "today" => 1,
-                "yesterday" => 2,
+                "yesterday" => 1,  // Changed - we'll handle specially
                 "week" => 7,
                 "month" => 30,
                 "3days" => 3,
@@ -71,12 +73,13 @@ namespace PersonDetection.API.Controllers
                 CameraId = cameraId
             };
 
-            // Special handling for "yesterday"
+            // Special handling for "yesterday" - use custom date range
             if (period.ToLower() == "yesterday")
             {
                 query.LastDays = null;
-                query.StartDate = DateTime.UtcNow.Date.AddDays(-1);
-                query.EndDate = DateTime.UtcNow.Date;
+                var yesterday = today.AddDays(-1);
+                query.StartDate = yesterday;
+                query.EndDate = yesterday; // Same day (single day range)
             }
 
             var result = await _queryDispatcher.Dispatch<HistoricalStatsDto>(query, ct);
