@@ -11,10 +11,14 @@ namespace PersonDetection.Application.Queries
     // Query must implement IQuery<TResult>
     public class GetHistoricalStatsQuery : IQuery<HistoricalStatsDto>
     {
+        public int? LastDays { get; set; }
         public DateTime? StartDate { get; set; }
         public DateTime? EndDate { get; set; }
-        public int? LastDays { get; set; }
         public int? CameraId { get; set; }
+
+        // NEW: Optional time components
+        public TimeSpan? StartTime { get; set; }
+        public TimeSpan? EndTime { get; set; }
     }
 
     // Handler must implement IQueryHandler with Handle method
@@ -37,77 +41,116 @@ namespace PersonDetection.Application.Queries
             var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
             // ═══════════════════════════════════════════════════════════════
-            // FIX: Use local date (DateTime.Today) instead of DateTime.UtcNow
+            // Calculate date range with optional time
             // ═══════════════════════════════════════════════════════════════
-            var today = DateTime.Today; // Local date, midnight
-
-            DateTime startDate;
-            DateTime endDate;
+            var today = DateTime.Today;
+            DateTime startDateTime;
+            DateTime endDateTime;
 
             if (query.StartDate.HasValue && query.EndDate.HasValue)
             {
-                // Custom range - use the dates as provided (local dates)
-                startDate = query.StartDate.Value.Date;
-                endDate = query.EndDate.Value.Date;
+                // Custom range with optional time
+                startDateTime = query.StartDate.Value.Date;
+                endDateTime = query.EndDate.Value.Date;
+
+                // Add time if provided
+                if (query.StartTime.HasValue)
+                {
+                    startDateTime = startDateTime.Add(query.StartTime.Value);
+                }
+
+                if (query.EndTime.HasValue)
+                {
+                    endDateTime = endDateTime.Add(query.EndTime.Value);
+                }
+                else
+                {
+                    // Default: end of day (23:59:59)
+                    endDateTime = endDateTime.AddDays(1).AddTicks(-1);
+                }
             }
             else if (query.LastDays.HasValue && query.LastDays.Value > 0)
             {
-                // Last N days - include today
-                endDate = today;
-                startDate = today.AddDays(-(query.LastDays.Value - 1));
+                // Last N days including today (full days)
+                endDateTime = today.AddDays(1).AddTicks(-1); // End of today
+                startDateTime = today.AddDays(-(query.LastDays.Value - 1)); // Start of first day
             }
             else
             {
-                // Default: last 7 days including today
-                endDate = today;
-                startDate = today.AddDays(-6);
+                // Default: last 7 days
+                endDateTime = today.AddDays(1).AddTicks(-1);
+                startDateTime = today.AddDays(-6);
             }
-
-            // For querying: startDate is inclusive, endDate needs +1 day for exclusive upper bound
-            var queryStartDate = startDate.Date;
-            var queryEndDate = endDate.Date.AddDays(1); // Exclusive end
 
             _logger.LogInformation(
-                "📊 Fetching stats: Display [{Start:yyyy-MM-dd}] to [{End:yyyy-MM-dd}], Query [{QStart:yyyy-MM-dd}] to [{QEnd:yyyy-MM-dd})",
-                startDate, endDate, queryStartDate, queryEndDate);
+                "📊 SP Stats: [{Start:yyyy-MM-dd HH:mm}] to [{End:yyyy-MM-dd HH:mm}], Camera: {Camera}",
+                startDateTime, endDateTime, query.CameraId?.ToString() ?? "All");
 
+            // ═══════════════════════════════════════════════════════════════
+            // Call Stored Procedures
+            // ═══════════════════════════════════════════════════════════════
+
+            // 1. Get Summary
+            var summaryList = await context.SpStatsSummary
+                .FromSqlInterpolated($@"
+                    EXEC sp_GetStatsSummary 
+                        @StartDate = {startDateTime}, 
+                        @EndDate = {endDateTime}, 
+                        @CameraId = {query.CameraId}")
+                .ToListAsync(ct);
+
+            var summary = summaryList.FirstOrDefault();
+
+            // 2. Get Daily Stats
+            var dailyStats = await context.SpDailyStats
+                .FromSqlInterpolated($@"
+                    EXEC sp_GetDailyStats 
+                        @StartDate = {startDateTime}, 
+                        @EndDate = {endDateTime}, 
+                        @CameraId = {query.CameraId}")
+                .ToListAsync(ct);
+
+            // 3. Get Camera Breakdown
+            var cameraBreakdown = await context.SpCameraBreakdown
+                .FromSqlInterpolated($@"
+                    EXEC sp_GetCameraBreakdown 
+                        @StartDate = {startDateTime}, 
+                        @EndDate = {endDateTime}")
+                .ToListAsync(ct);
+
+            // ═══════════════════════════════════════════════════════════════
+            // Build Result
+            // ═══════════════════════════════════════════════════════════════
             var result = new HistoricalStatsDto
             {
-                StartDate = startDate,  // Display start date
-                EndDate = endDate,      // Display end date (inclusive)
-                TotalDays = (endDate - startDate).Days + 1  // +1 because both dates are inclusive
+                StartDate = summary?.StartDate ?? startDateTime,
+                EndDate = summary?.EndDate ?? endDateTime,
+                TotalDays = summary?.TotalDays ?? 0,
+                TotalUniquePersons = summary?.TotalUniquePersons ?? 0,
+                TotalDetections = summary?.TotalDetections ?? 0,
+
+                DailyStats = dailyStats.Select(d => new DailyStatsDto
+                {
+                    Date = d.Date,
+                    DayName = d.DayName,
+                    UniquePersons = d.UniquePersons,
+                    TotalDetections = d.TotalDetections,
+                    PeakHour = d.PeakHour,
+                    PeakHourCount = d.PeakHourCount
+                }).ToList(),
+
+                CameraBreakdown = cameraBreakdown.Select(c => new CameraBreakdownDto
+                {
+                    CameraId = c.CameraId,
+                    CameraName = c.CameraName,
+                    TotalDetections = c.TotalDetections,
+                    UniquePersons = c.UniquePersons
+                }).ToList()
             };
 
-            // Get unique persons in date range
-            var uniquePersonsQuery = context.UniquePersons
-                .Where(p => p.IsActive &&
-                           ((p.FirstSeenAt >= queryStartDate && p.FirstSeenAt < queryEndDate) ||
-                            (p.LastSeenAt >= queryStartDate && p.LastSeenAt < queryEndDate)));
-
-            if (query.CameraId.HasValue)
-            {
-                uniquePersonsQuery = uniquePersonsQuery
-                    .Where(p => p.FirstSeenCameraId == query.CameraId || p.LastSeenCameraId == query.CameraId);
-            }
-
-            result.TotalUniquePersons = await uniquePersonsQuery.CountAsync(ct);
-
-            // Get total detections
-            var detectionsQuery = context.DetectionResults
-                .Where(d => d.Timestamp >= queryStartDate && d.Timestamp < queryEndDate);
-
-            if (query.CameraId.HasValue)
-            {
-                detectionsQuery = detectionsQuery.Where(d => d.CameraId == query.CameraId);
-            }
-
-            result.TotalDetections = await detectionsQuery.SumAsync(d => d.TotalDetections, ct);
-
-            // Get daily breakdown
-            result.DailyStats = await GetDailyStatsAsync(context, startDate, endDate, query.CameraId, ct);
-
-            // Get camera breakdown
-            result.CameraBreakdown = await GetCameraBreakdownAsync(context, queryStartDate, queryEndDate, ct);
+            _logger.LogInformation(
+                "📊 Stats result: {Unique} unique, {Detections} detections, {Days} days",
+                result.TotalUniquePersons, result.TotalDetections, result.TotalDays);
 
             return result;
         }

@@ -59,30 +59,41 @@ export class StatsService {
     lastDays?: number,
     startDate?: Date,
     endDate?: Date,
-    cameraId?: number
+    cameraId?: number,
+    startTime?: string,  // NEW: "HH:mm" format
+    endTime?: string     // NEW: "HH:mm" format
   ): Observable<HistoricalStats> {
     let params = new HttpParams();
 
     if (lastDays) {
       params = params.set('lastDays', lastDays.toString());
     }
-    
+
     if (startDate) {
-      // ✅ Send as local date string YYYY-MM-DD
       params = params.set('startDate', this.formatLocalDate(startDate));
     }
-    
+
     if (endDate) {
-      // ✅ Send as local date string YYYY-MM-DD
       params = params.set('endDate', this.formatLocalDate(endDate));
     }
-    
+
+    // NEW: Add time parameters
+    if (startTime) {
+      params = params.set('startTime', startTime);
+    }
+
+    if (endTime) {
+      params = params.set('endTime', endTime);
+    }
+
     if (cameraId) {
       params = params.set('cameraId', cameraId.toString());
     }
 
     return this.http.get<HistoricalStats>(`${this.baseUrl}/historical`, { params });
   }
+
+
 
   getQuickStats(
     period: 'today' | 'yesterday' | 'week' | 'month' | '3days' | '4days', 

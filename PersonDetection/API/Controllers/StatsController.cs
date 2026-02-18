@@ -26,11 +26,13 @@ namespace PersonDetection.API.Controllers
         /// </summary>
         [HttpGet("historical")]
         public async Task<ActionResult<HistoricalStatsDto>> GetHistoricalStats(
-            [FromQuery] int? lastDays = null,
-            [FromQuery] DateTime? startDate = null,
-            [FromQuery] DateTime? endDate = null,
-            [FromQuery] int? cameraId = null,
-            CancellationToken ct = default)
+          [FromQuery] int? lastDays = null,
+          [FromQuery] DateTime? startDate = null,
+          [FromQuery] DateTime? endDate = null,
+          [FromQuery] string? startTime = null,  // NEW: "HH:mm" format
+          [FromQuery] string? endTime = null,    // NEW: "HH:mm" format
+          [FromQuery] int? cameraId = null,
+          CancellationToken ct = default)
         {
             var query = new GetHistoricalStatsQuery
             {
@@ -40,7 +42,17 @@ namespace PersonDetection.API.Controllers
                 CameraId = cameraId
             };
 
-            // ★ Using Dispatch (not DispatchAsync)
+            // Parse time if provided
+            if (!string.IsNullOrEmpty(startTime) && TimeSpan.TryParse(startTime, out var st))
+            {
+                query.StartTime = st;
+            }
+
+            if (!string.IsNullOrEmpty(endTime) && TimeSpan.TryParse(endTime, out var et))
+            {
+                query.EndTime = et;
+            }
+
             var result = await _queryDispatcher.Dispatch<HistoricalStatsDto>(query, ct);
             return Ok(result);
         }

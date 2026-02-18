@@ -48,6 +48,9 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   customStartDate: Date | null = null;
   customEndDate: Date | null = null;
 
+  customStartTime: string = '00:00';
+  customEndTime: string = '23:59';
+
   displayedColumns: string[] = ['date', 'dayName', 'uniquePersons', 'totalDetections', 'peakHour'];
 
   private destroy$ = new Subject<void>();
@@ -80,7 +83,9 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
         undefined,
         this.customStartDate,
         this.customEndDate,
-        this.data?.cameraId
+        this.data?.cameraId,
+        this.customStartTime,  // NEW
+        this.customEndTime     // NEW
       );
     } else {
       const days = parseInt(this.selectedPeriod, 10);

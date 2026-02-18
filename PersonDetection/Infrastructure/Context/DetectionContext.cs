@@ -2,6 +2,7 @@
 namespace PersonDetection.Infrastructure.Context
 {
     using Microsoft.EntityFrameworkCore;
+    using PersonDetection.Application.DTOs;
     using PersonDetection.Domain.Entities;
 
     public class DetectionContext : DbContext
@@ -21,6 +22,16 @@ namespace PersonDetection.Infrastructure.Context
         // 👇 ADD THESE NEW DbSets
         public DbSet<VideoJob> VideoJobs { get; set; } = null!;
         public DbSet<VideoPersonTimeline> VideoPersonTimelines { get; set; } = null!;
+
+
+        // ═══════════════════════════════════════════════════════════════
+        // STORED PROCEDURE RESULT SETS (Keyless)
+        // ═══════════════════════════════════════════════════════════════
+        public DbSet<SpStatsSummary> SpStatsSummary => Set<SpStatsSummary>();
+        public DbSet<SpDailyStats> SpDailyStats => Set<SpDailyStats>();
+        public DbSet<SpCameraBreakdown> SpCameraBreakdown => Set<SpCameraBreakdown>();
+        public DbSet<SpHourlyStats> SpHourlyStats => Set<SpHourlyStats>();
+
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -147,6 +158,33 @@ namespace PersonDetection.Infrastructure.Context
                     DisplayOrder = 0
                 }
             );
+
+            // ═══════════════════════════════════════════════════════════
+            // KEYLESS ENTITIES FOR STORED PROCEDURES
+            // ═══════════════════════════════════════════════════════════
+            modelBuilder.Entity<SpStatsSummary>(entity =>
+            {
+                entity.HasNoKey();
+                entity.ToView(null); // Not mapped to any view/table
+            });
+
+            modelBuilder.Entity<SpDailyStats>(entity =>
+            {
+                entity.HasNoKey();
+                entity.ToView(null);
+            });
+
+            modelBuilder.Entity<SpCameraBreakdown>(entity =>
+            {
+                entity.HasNoKey();
+                entity.ToView(null);
+            });
+
+            modelBuilder.Entity<SpHourlyStats>(entity =>
+            {
+                entity.HasNoKey();
+                entity.ToView(null);
+            });
         }
     }
 }

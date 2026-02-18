@@ -338,3 +338,14 @@ mat-dialog-actions {
     }
   }
 }
+.time-field {
+  width: 100px;
+  min-width: 100px;
+}
+
+.custom-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

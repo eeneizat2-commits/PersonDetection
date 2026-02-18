@@ -20,29 +20,45 @@
     </mat-form-field>
 
     <!-- Custom Date Range -->
+    <!-- Custom Date Range -->
     @if (selectedPeriod === 'custom') {
     <div class="custom-range">
+      <!-- Start Date -->
       <mat-form-field appearance="outline">
         <mat-label>Start Date</mat-label>
         <input matInput [matDatepicker]="startPicker" [(ngModel)]="customStartDate" readonly
-          (click)="startPicker.open()">
+               (click)="startPicker.open()">
         <button matSuffix mat-icon-button type="button" (click)="startPicker.open()">
           <mat-icon>calendar_today</mat-icon>
         </button>
         <mat-datepicker #startPicker></mat-datepicker>
       </mat-form-field>
 
+      <!-- Start Time (NEW) -->
+      <mat-form-field appearance="outline" class="time-field">
+        <mat-label>Start Time</mat-label>
+        <input matInput type="time" [(ngModel)]="customStartTime">
+      </mat-form-field>
+
+      <!-- End Date -->
       <mat-form-field appearance="outline">
         <mat-label>End Date</mat-label>
-        <input matInput [matDatepicker]="endPicker" [(ngModel)]="customEndDate" readonly (click)="endPicker.open()">
+        <input matInput [matDatepicker]="endPicker" [(ngModel)]="customEndDate" readonly
+               (click)="endPicker.open()">
         <button matSuffix mat-icon-button type="button" (click)="endPicker.open()">
           <mat-icon>calendar_today</mat-icon>
         </button>
         <mat-datepicker #endPicker></mat-datepicker>
       </mat-form-field>
 
+      <!-- End Time (NEW) -->
+      <mat-form-field appearance="outline" class="time-field">
+        <mat-label>End Time</mat-label>
+        <input matInput type="time" [(ngModel)]="customEndTime">
+      </mat-form-field>
+
       <button mat-raised-button color="primary" (click)="applyCustomRange()"
-        [disabled]="!customStartDate || !customEndDate">
+              [disabled]="!customStartDate || !customEndDate">
         Apply
       </button>
     </div>
