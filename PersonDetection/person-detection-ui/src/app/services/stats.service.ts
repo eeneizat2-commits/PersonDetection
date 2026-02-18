@@ -51,7 +51,7 @@ export interface SummaryStats {
   providedIn: 'root'
 })
 export class StatsService {
-private baseUrl = `${environment.apiUrl}/stats`;
+  private baseUrl = `${environment.apiUrl}/stats`;
 
   constructor(private http: HttpClient) {}
 
@@ -66,12 +66,17 @@ private baseUrl = `${environment.apiUrl}/stats`;
     if (lastDays) {
       params = params.set('lastDays', lastDays.toString());
     }
+    
     if (startDate) {
-      params = params.set('startDate', startDate.toISOString());
+      // ✅ Send as local date string YYYY-MM-DD
+      params = params.set('startDate', this.formatLocalDate(startDate));
     }
+    
     if (endDate) {
-      params = params.set('endDate', endDate.toISOString());
+      // ✅ Send as local date string YYYY-MM-DD
+      params = params.set('endDate', this.formatLocalDate(endDate));
     }
+    
     if (cameraId) {
       params = params.set('cameraId', cameraId.toString());
     }
@@ -79,7 +84,10 @@ private baseUrl = `${environment.apiUrl}/stats`;
     return this.http.get<HistoricalStats>(`${this.baseUrl}/historical`, { params });
   }
 
-  getQuickStats(period: 'today' | 'yesterday' | 'week' | 'month' | '3days' | '4days', cameraId?: number): Observable<HistoricalStats> {
+  getQuickStats(
+    period: 'today' | 'yesterday' | 'week' | 'month' | '3days' | '4days', 
+    cameraId?: number
+  ): Observable<HistoricalStats> {
     let params = new HttpParams();
     if (cameraId) {
       params = params.set('cameraId', cameraId.toString());
@@ -89,5 +97,15 @@ private baseUrl = `${environment.apiUrl}/stats`;
 
   getSummary(): Observable<SummaryStats> {
     return this.http.get<SummaryStats>(`${this.baseUrl}/summary`);
+  }
+
+  /**
+   * Format date as local YYYY-MM-DD string (no timezone conversion)
+   */
+  private formatLocalDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 }
