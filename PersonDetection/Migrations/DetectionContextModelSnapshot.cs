@@ -22,6 +22,90 @@ namespace PersonDetection.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("PersonDetection.Application.DTOs.SpCameraBreakdown", b =>
+                {
+                    b.Property<int>("CameraId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CameraName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("TotalDetections")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UniquePersons")
+                        .HasColumnType("int");
+
+                    b.ToTable((string)null);
+
+                    b.ToView(null, (string)null);
+                });
+
+            modelBuilder.Entity("PersonDetection.Application.DTOs.SpDailyStats", b =>
+                {
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DayName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("PeakHour")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PeakHourCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalDetections")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UniquePersons")
+                        .HasColumnType("int");
+
+                    b.ToTable((string)null);
+
+                    b.ToView(null, (string)null);
+                });
+
+            modelBuilder.Entity("PersonDetection.Application.DTOs.SpHourlyStats", b =>
+                {
+                    b.Property<int>("Hour")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalDetections")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UniquePersons")
+                        .HasColumnType("int");
+
+                    b.ToTable((string)null);
+
+                    b.ToView(null, (string)null);
+                });
+
+            modelBuilder.Entity("PersonDetection.Application.DTOs.SpStatsSummary", b =>
+                {
+                    b.Property<DateTime>("EndDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("StartDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("TotalDays")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalDetections")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TotalUniquePersons")
+                        .HasColumnType("int");
+
+                    b.ToTable((string)null);
+
+                    b.ToView(null, (string)null);
+                });
+
             modelBuilder.Entity("PersonDetection.Domain.Entities.Camera", b =>
                 {
                     b.Property<int>("Id")

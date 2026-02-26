@@ -1,4 +1,3 @@
-// src/app/services/stats.service.ts
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
@@ -55,37 +54,29 @@ export class StatsService {
 
   constructor(private http: HttpClient) {}
 
+  /**
+   * Get stats by number of days
+   */
   getHistoricalStats(
     lastDays?: number,
     startDate?: Date,
     endDate?: Date,
-    cameraId?: number,
-    startTime?: string,  // NEW: "HH:mm" format
-    endTime?: string     // NEW: "HH:mm" format
+    cameraId?: number
   ): Observable<HistoricalStats> {
     let params = new HttpParams();
 
     if (lastDays) {
       params = params.set('lastDays', lastDays.toString());
     }
-
+    
     if (startDate) {
       params = params.set('startDate', this.formatLocalDate(startDate));
     }
-
+    
     if (endDate) {
       params = params.set('endDate', this.formatLocalDate(endDate));
     }
-
-    // NEW: Add time parameters
-    if (startTime) {
-      params = params.set('startTime', startTime);
-    }
-
-    if (endTime) {
-      params = params.set('endTime', endTime);
-    }
-
+    
     if (cameraId) {
       params = params.set('cameraId', cameraId.toString());
     }
@@ -93,7 +84,26 @@ export class StatsService {
     return this.http.get<HistoricalStats>(`${this.baseUrl}/historical`, { params });
   }
 
+  /**
+   * Get stats with full datetime (date + time)
+   */
+  getHistoricalStatsWithDateTime(
+    startDateTime: Date,
+    endDateTime: Date,
+    cameraId?: number
+  ): Observable<HistoricalStats> {
+    let params = new HttpParams();
 
+    // Send full datetime in ISO format but adjusted for local timezone
+    params = params.set('startDate', this.formatLocalDateTime(startDateTime));
+    params = params.set('endDate', this.formatLocalDateTime(endDateTime));
+    
+    if (cameraId) {
+      params = params.set('cameraId', cameraId.toString());
+    }
+
+    return this.http.get<HistoricalStats>(`${this.baseUrl}/historical`, { params });
+  }
 
   getQuickStats(
     period: 'today' | 'yesterday' | 'week' | 'month' | '3days' | '4days', 
@@ -111,12 +121,25 @@ export class StatsService {
   }
 
   /**
-   * Format date as local YYYY-MM-DD string (no timezone conversion)
+   * Format date as local YYYY-MM-DD string
    */
   private formatLocalDate(date: Date): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Format datetime as local YYYY-MM-DDTHH:mm:ss string
+   */
+  private formatLocalDateTime(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
   }
 }
