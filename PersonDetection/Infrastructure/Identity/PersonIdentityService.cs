@@ -34,6 +34,7 @@ namespace PersonDetection.Infrastructure.Identity
 
         private class PersonIdentity
         {
+            public readonly object SyncLock = new();  // ← ADD THIS LINE
             public Guid GlobalPersonId { get; set; }
             public int DbId { get; set; }
             public float[] FeatureVector { get; set; } = null!;
@@ -399,12 +400,16 @@ namespace PersonDetection.Infrastructure.Identity
             }
 
             var matches = activeIdentities
-                .Select(identity =>
-                {
-                    var storedVector = new FeatureVector(identity.FeatureVector);
-                    var rawDistance = vector.EuclideanDistance(storedVector);
-
-                    float temporalPenalty = 0f;
+                    .Select(identity =>
+                    {
+                        float[] featureCopy;
+                        lock (identity.SyncLock)
+                        {
+                            featureCopy = (float[])identity.FeatureVector.Clone();
+                        }
+                        var storedVector = new FeatureVector(featureCopy);
+                        var rawDistance = vector.EuclideanDistance(storedVector);
+                        float temporalPenalty = 0f;
 
                     if (_settings.EnableTemporalMatching)
                     {
@@ -581,42 +586,45 @@ namespace PersonDetection.Infrastructure.Identity
         }
 
         private void UpdateIdentityOnMatch(
-            Guid personId,
-            int cameraId,
-            BoundingBox? boundingBox,
-            float confidence)
+      Guid personId,
+      int cameraId,
+      BoundingBox? boundingBox,
+      float confidence)
         {
             if (!_globalIdentities.TryGetValue(personId, out var identity))
                 return;
 
-            var now = DateTime.UtcNow;
-            identity.LastSeen = now;
-            identity.LastActiveTime = now;
-            identity.LastBoundingBox = boundingBox;
-            identity.MatchCount++;
-
-            if (cameraId > 0)
+            lock (identity.SyncLock)
             {
-                identity.LastCameraId = cameraId;
-                identity.SeenOnCameras.Add(cameraId);
-            }
+                var now = DateTime.UtcNow;
+                identity.LastSeen = now;
+                identity.LastActiveTime = now;
+                identity.LastBoundingBox = boundingBox;
+                identity.MatchCount++;
 
-            if (confidence > 0)
-            {
-                identity.MaxConfidence = Math.Max(identity.MaxConfidence, confidence);
-                identity.ConfidenceHistory.Add(new ConfidenceRecord
+                if (cameraId > 0)
                 {
-                    Timestamp = now,
-                    Confidence = confidence,
-                    CameraId = cameraId
-                });
+                    identity.LastCameraId = cameraId;
+                    identity.SeenOnCameras.Add(cameraId);
+                }
 
-                var windowStart = now.AddSeconds(-_settings.FastWalkerTimeWindowSeconds);
-                identity.ConfidenceHistory.RemoveAll(r => r.Timestamp < windowStart);
-
-                if (confidence >= _settings.MinConfidenceForConfirmation)
+                if (confidence > 0)
                 {
-                    identity.HighConfidenceCount++;
+                    identity.MaxConfidence = Math.Max(identity.MaxConfidence, confidence);
+                    identity.ConfidenceHistory.Add(new ConfidenceRecord
+                    {
+                        Timestamp = now,
+                        Confidence = confidence,
+                        CameraId = cameraId
+                    });
+
+                    var windowStart = now.AddSeconds(-_settings.FastWalkerTimeWindowSeconds);
+                    identity.ConfidenceHistory.RemoveAll(r => r == null || r.Timestamp < windowStart);
+
+                    if (confidence >= _settings.MinConfidenceForConfirmation)
+                    {
+                        identity.HighConfidenceCount++;
+                    }
                 }
             }
 
@@ -626,7 +634,6 @@ namespace PersonDetection.Infrastructure.Identity
                 _logger.LogInformation("✅ CONFIRMED on match: {Id}", personId.ToString()[..8]);
             }
         }
-
         #endregion
 
         #region Helper Methods
@@ -720,10 +727,17 @@ namespace PersonDetection.Infrastructure.Identity
         public int GetActiveIdentityCount() => _globalIdentities.Count;
         public int GetConfirmedIdentityCount() => _confirmedPersons.Count;
 
-        public int GetCameraIdentityCount(int cameraId) =>
-            _globalIdentities.Values.Count(i =>
-                i.SeenOnCameras.Contains(cameraId) &&
-                _confirmedPersons.ContainsKey(i.GlobalPersonId));
+        public int GetCameraIdentityCount(int cameraId)
+        {
+            return _globalIdentities.Values.Count(i =>
+            {
+                lock (i.SyncLock)
+                {
+                    return i.SeenOnCameras.Contains(cameraId) &&
+                           _confirmedPersons.ContainsKey(i.GlobalPersonId);
+                }
+            });
+        }
 
         public int GetGlobalUniqueCount() => _confirmedPersons.Count;
 
@@ -732,8 +746,13 @@ namespace PersonDetection.Infrastructure.Identity
             var total = _globalIdentities.Count;
             var confirmed = _confirmedPersons.Count;
             var highConf = _globalIdentities.Values.Count(i =>
-                _confirmedPersons.ContainsKey(i.GlobalPersonId) &&
-                (i.IsConfirmedByConfidence || i.SeenOnCameras.Count > 1 || i.MatchCount >= 2));
+            {
+                lock (i.SyncLock)
+                {
+                    return _confirmedPersons.ContainsKey(i.GlobalPersonId) &&
+                           (i.IsConfirmedByConfidence || i.SeenOnCameras.Count > 1 || i.MatchCount >= 2);
+                }
+            });
             return (total, confirmed, highConf);
         }
 
