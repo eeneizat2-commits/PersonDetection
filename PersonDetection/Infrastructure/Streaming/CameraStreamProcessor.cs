@@ -75,14 +75,16 @@ namespace PersonDetection.Infrastructure.Streaming
         private static readonly Scalar _green = new(0, 255, 0);
         private static readonly Scalar _black = new(0, 0, 0);
 
-        private const int ThumbnailWidth = 64;
-        private const int ThumbnailHeight = 128;
-        private const int ThumbnailJpegQuality = 75;
+        private const int ThumbnailWidth = 32;
+        private const int ThumbnailHeight = 64;
+        private const int ThumbnailJpegQuality = 50;
 
         private volatile StreamConnectionState _connectionState = StreamConnectionState.Disconnected;
         private int _reconnectAttempt = 0;
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
+
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(3);
 
         static CameraStreamProcessor()
         {
@@ -1325,54 +1327,62 @@ namespace PersonDetection.Infrastructure.Streaming
             _logger.LogDebug("💾 Database save loop ended for camera {Id}", _cameraId);
         }
 
+ 
         private async Task BatchSaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)
         {
             if (persons.Count == 0) return;
 
-            // ═══════════════════════════════════════════════════════
-            // Pre-compute thumbnails OUTSIDE retry block
-            // CPU work only — no DB dependency, no need to retry
-            // ═══════════════════════════════════════════════════════
-            byte[]? currentFrame;
-            lock (_frameLock) { currentFrame = _currentJpeg; }
-
-            var thumbnails = new Dictionary<Guid, byte[]>();
-            if (currentFrame != null)
+            if (!await _dbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(5), ct))
             {
-                foreach (var person in persons)
-                {
-                    // One thumbnail per GlobalPersonId (skip duplicates in same batch)
-                    if (!thumbnails.ContainsKey(person.GlobalPersonId))
-                    {
-                        var thumb = GenerateThumbnail(currentFrame, person.BoundingBox);
-                        if (thumb != null)
-                        {
-                            thumbnails[person.GlobalPersonId] = thumb;
-                        }
-                    }
-                }
+                _logger.LogWarning("⏭️ Skipping DB save for camera {Camera} — DB is busy", _cameraId);
+                return;
             }
 
             try
             {
+                byte[]? currentFrame;
+                lock (_frameLock) { currentFrame = _currentJpeg; }
+
+                var thumbnails = new Dictionary<Guid, byte[]>();
+                if (currentFrame != null)
+                {
+                    foreach (var person in persons)
+                    {
+                        if (!thumbnails.ContainsKey(person.GlobalPersonId))
+                        {
+                            var thumb = GenerateThumbnail(currentFrame, person.BoundingBox);
+                            if (thumb != null)
+                                thumbnails[person.GlobalPersonId] = thumb;
+                        }
+                    }
+                }
+
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+                context.Database.SetCommandTimeout(120);
 
                 var strategy = context.Database.CreateExecutionStrategy();
                 var newPersonMappings = new List<(Guid GlobalId, int DbId)>();
 
+                // Track which persons are existing (for post-commit update)
+                var existingPersonLookup = new Dictionary<Guid, dynamic>();
+                var newGlobalIds = new HashSet<Guid>();
+
+                // ═══════════════════════════════════════════════════
+                // PART A: Transaction — all INSERTs (atomic)
+                // ═══════════════════════════════════════════════════
                 await strategy.ExecuteAsync(async () =>
                 {
                     context.ChangeTracker.Clear();
                     newPersonMappings.Clear();
+                    existingPersonLookup.Clear();
+                    newGlobalIds.Clear();
 
                     using var transaction = await context.Database.BeginTransactionAsync(ct);
 
                     try
                     {
-                        // ═══════════════════════════════════════════
-                        // Phase 1: Save DetectionResult → get result.Id
-                        // ═══════════════════════════════════════════
+                        // Phase 1: DetectionResult
                         var result = new DetectionResult
                         {
                             CameraId = _cameraId,
@@ -1385,68 +1395,92 @@ namespace PersonDetection.Infrastructure.Streaming
                         context.DetectionResults.Add(result);
                         await context.SaveChangesAsync(ct);
 
-                        // ═══════════════════════════════════════════
-                        // Phase 2: Batch-fetch ALL existing UniquePersons
-                        // ═══════════════════════════════════════════
+                        // Phase 2: Lightweight lookup
                         var globalIds = persons
                             .Select(p => p.GlobalPersonId)
                             .Distinct()
                             .ToList();
 
-                        var existingPersons = await context.UniquePersons
+                        var lookupResults = await context.UniquePersons
+                            .AsNoTracking()
                             .Where(u => globalIds.Contains(u.GlobalPersonId))
-                            .ToDictionaryAsync(u => u.GlobalPersonId, ct);
+                            .Select(u => new { u.Id, u.GlobalPersonId, HasThumbnail = u.ThumbnailData != null })
+                            .ToListAsync(ct);
 
-                        // ═══════════════════════════════════════════
-                        // Phase 3: Create new + update existing
-                        //          Save ONCE to get all new IDs
-                        // ═══════════════════════════════════════════
+                        foreach (var r in lookupResults)
+                            existingPersonLookup[r.GlobalPersonId] = r;
+
+                        // Phase 3: Insert new UniquePersons
                         var newPersonEntries = new List<(TrackedPerson tracked, UniquePerson entity)>();
 
-                        foreach (var person in persons)
-                        {
-                            // Try to get pre-computed thumbnail for this person
-                            thumbnails.TryGetValue(person.GlobalPersonId, out var thumbnail);
+                        var missingGlobalIds = globalIds
+                            .Where(id => !existingPersonLookup.ContainsKey(id))
+                            .ToList();
 
-                            if (!existingPersons.ContainsKey(person.GlobalPersonId))
+                        foreach (var globalId in missingGlobalIds)
+                        {
+                            var person = persons.First(p => p.GlobalPersonId == globalId);
+                            thumbnails.TryGetValue(globalId, out var thumbnail);
+
+                            try
                             {
-                                // NEW person — create with thumbnail
+                                var existsNow = await context.UniquePersons
+                                    .AsNoTracking()
+                                    .Where(u => u.GlobalPersonId == globalId)
+                                    .Select(u => new { u.Id, u.GlobalPersonId, HasThumbnail = u.ThumbnailData != null })
+                                    .FirstOrDefaultAsync(ct);
+
+                                if (existsNow != null)
+                                {
+                                    existingPersonLookup[globalId] = existsNow;
+                                    continue;
+                                }
+
                                 var newUnique = UniquePerson.Create(
-                                    person.GlobalPersonId,
-                                    _cameraId,
-                                    person.Features,
-                                    thumbnail);              // ← Thumbnail passed here
+                                    globalId, _cameraId, person.Features, thumbnail);
 
                                 context.UniquePersons.Add(newUnique);
-                                existingPersons[person.GlobalPersonId] = newUnique;
+                                await context.SaveChangesAsync(ct);
+
                                 newPersonEntries.Add((person, newUnique));
+                                newGlobalIds.Add(globalId);
+
+                                existingPersonLookup[globalId] = new
+                                {
+                                    Id = newUnique.Id,
+                                    GlobalPersonId = globalId,
+                                    HasThumbnail = thumbnail != null
+                                };
                             }
-                            else
+                            catch (DbUpdateException ex) when (
+                                ex.InnerException?.Message.Contains("duplicate key") == true ||
+                                ex.InnerException?.Message.Contains("UNIQUE") == true)
                             {
-                                // EXISTING person — update, fill thumbnail if NULL
-                                existingPersons[person.GlobalPersonId]
-                                    .UpdateLastSeen(
-                                        _cameraId,
-                                        person.Features,
-                                        thumbnail);           // ← Thumbnail passed here
+                                context.ChangeTracker.Clear();
+
+                                var existing = await context.UniquePersons
+                                    .AsNoTracking()
+                                    .Where(u => u.GlobalPersonId == globalId)
+                                    .Select(u => new { u.Id, u.GlobalPersonId, HasThumbnail = u.ThumbnailData != null })
+                                    .FirstOrDefaultAsync(ct);
+
+                                if (existing != null)
+                                    existingPersonLookup[globalId] = existing;
+
+                                _logger.LogDebug("🔄 Duplicate handled for {Id}", globalId.ToString()[..8]);
                             }
                         }
 
-                        if (newPersonEntries.Count > 0)
-                        {
-                            await context.SaveChangesAsync(ct);
-                        }
-                        // All UniquePersons now have valid .Id values
-
-                        // ═══════════════════════════════════════════
-                        // Phase 4: Add PersonSightings + DetectedPersons
-                        // ═══════════════════════════════════════════
+                        // Phase 4: Sightings + DetectedPersons
                         foreach (var person in persons)
                         {
-                            var uniquePerson = existingPersons[person.GlobalPersonId];
+                            if (!existingPersonLookup.ContainsKey(person.GlobalPersonId))
+                                continue; // Safety: skip if somehow missing
+
+                            int uniquePersonId = (int)existingPersonLookup[person.GlobalPersonId].Id;
 
                             context.PersonSightings.Add(PersonSighting.Create(
-                                uniquePerson.Id, _cameraId, result.Id, person.Confidence,
+                                uniquePersonId, _cameraId, result.Id, person.Confidence,
                                 person.BoundingBox.X, person.BoundingBox.Y,
                                 person.BoundingBox.Width, person.BoundingBox.Height));
 
@@ -1461,7 +1495,7 @@ namespace PersonDetection.Infrastructure.Streaming
                                 FeatureVector = person.Features != null
                                     ? string.Join(",", person.Features)
                                     : null,
-                                TrackId = person.TrackId,     // ← TrackId fix
+                                TrackId = person.TrackId,
                                 DetectedAt = DateTime.UtcNow,
                                 DetectionResultId = result.Id
                             });
@@ -1470,9 +1504,7 @@ namespace PersonDetection.Infrastructure.Streaming
                         await context.SaveChangesAsync(ct);
 
                         foreach (var (tracked, entity) in newPersonEntries)
-                        {
                             newPersonMappings.Add((tracked.GlobalPersonId, entity.Id));
-                        }
 
                         await transaction.CommitAsync(ct);
                     }
@@ -1484,9 +1516,61 @@ namespace PersonDetection.Infrastructure.Streaming
                     }
                 });
 
+                // Update identity matcher after successful commit
                 foreach (var (globalId, dbId) in newPersonMappings)
-                {
                     _identityMatcher.SetDbId(globalId, dbId);
+
+                // ═══════════════════════════════════════════════════
+                // PART B: Post-commit UPDATEs (no transaction, no deadlock)
+                //         Non-critical — if these fail, data is still consistent
+                // ═══════════════════════════════════════════════════
+                try
+                {
+                    var now = DateTime.UtcNow;
+
+                    foreach (var person in persons)
+                    {
+                        if (newGlobalIds.Contains(person.GlobalPersonId))
+                            continue;
+                        if (!existingPersonLookup.ContainsKey(person.GlobalPersonId))
+                            continue;
+
+                        int lookupId = (int)existingPersonLookup[person.GlobalPersonId].Id;
+                        bool hasThumbnail = (bool)existingPersonLookup[person.GlobalPersonId].HasThumbnail;
+
+                        var featureStr = person.Features != null
+                            ? string.Join(",", person.Features)
+                            : null;
+
+                        thumbnails.TryGetValue(person.GlobalPersonId, out var thumb);
+
+                        if (thumb != null && !hasThumbnail)
+                        {
+                            await context.Database.ExecuteSqlInterpolatedAsync(
+                                $@"UPDATE UniquePersons 
+                           SET LastSeenAt = {now}, 
+                               LastSeenCameraId = {_cameraId},
+                               TotalSightings = TotalSightings + 1,
+                               FeatureVector = {featureStr},
+                               ThumbnailData = {thumb}
+                           WHERE Id = {lookupId}", ct);
+                        }
+                        else
+                        {
+                            await context.Database.ExecuteSqlInterpolatedAsync(
+                                $@"UPDATE UniquePersons 
+                           SET LastSeenAt = {now}, 
+                               LastSeenCameraId = {_cameraId},
+                               TotalSightings = TotalSightings + 1,
+                               FeatureVector = {featureStr}
+                           WHERE Id = {lookupId}", ct);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Non-critical: sightings are already saved
+                    _logger.LogDebug(ex, "Post-commit update skipped for camera {Camera}", _cameraId);
                 }
 
                 _logger.LogDebug("💾 Saved {Count} persons for camera {Camera}",
@@ -1496,10 +1580,13 @@ namespace PersonDetection.Infrastructure.Streaming
             {
                 _logger.LogWarning(ex, "DB batch save failed for camera {Camera}", _cameraId);
             }
-        }
-        /// <summary>
-        /// Crop person from frame and generate a small JPEG thumbnail
-        /// </summary>
+            finally
+            {
+                _dbSaveSemaphore.Release();
+            }
+        }        /// <summary>
+                 /// Crop person from frame and generate a small JPEG thumbnail
+                 /// </summary>
         private byte[]? GenerateThumbnail(byte[] jpegData, BoundingBox box)
         {
             try
