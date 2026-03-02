@@ -9,7 +9,7 @@ namespace PersonDetection.Infrastructure.Identity
     using PersonDetection.Domain.Services;
     using PersonDetection.Domain.ValueObjects;
     using PersonDetection.Infrastructure.Context;
-
+    using Microsoft.EntityFrameworkCore;
     public class PersonIdentityService : IPersonIdentityMatcher
     {
         private readonly ConcurrentDictionary<Guid, PersonIdentity> _globalIdentities = new();
@@ -822,34 +822,53 @@ namespace PersonDetection.Infrastructure.Identity
             ["IsInitialized"] = _isInitialized
         };
 
+        // ✅ NEW — non-blocking async refresh
         private int _cachedTodayCount = 0;
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
+        private volatile bool _isRefreshingTodayCount = false;
 
         public int GetTodayUniqueCount()
         {
-            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 10)
+            // Return cached value immediately (never blocks)
+            // Trigger async refresh if cache is stale
+            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 10
+                && !_isRefreshingTodayCount)
             {
-                try
-                {
-                    using var scope = _serviceProvider.CreateScope();
-                    var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-                    var todayStart = DateTime.UtcNow.Date;
-                    _cachedTodayCount = context.UniquePersons
-                        .Where(p => p.IsActive && (p.FirstSeenAt >= todayStart || p.LastSeenAt >= todayStart))
-                        .Count();
-                    _lastTodayCountUpdate = DateTime.UtcNow;
-                }
-                catch
-                {
-                    var todayStart = DateTime.UtcNow.Date;
-                    _cachedTodayCount = _globalIdentities.Values
-                        .Count(i => i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
-                    _lastTodayCountUpdate = DateTime.UtcNow;
-                }
+                _isRefreshingTodayCount = true;
+                _ = RefreshTodayCountAsync();
             }
             return _cachedTodayCount;
         }
 
+        private async Task RefreshTodayCountAsync()
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+                var todayStart = DateTime.UtcNow.Date;
+
+                _cachedTodayCount = await context.UniquePersons
+                    .AsNoTracking()
+                    .Where(p => p.IsActive &&
+                               (p.FirstSeenAt >= todayStart || p.LastSeenAt >= todayStart))
+                    .CountAsync();
+
+                _lastTodayCountUpdate = DateTime.UtcNow;
+            }
+            catch
+            {
+                // Fallback: use in-memory identities
+                var todayStart = DateTime.UtcNow.Date;
+                _cachedTodayCount = _globalIdentities.Values
+                    .Count(i => i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
+                _lastTodayCountUpdate = DateTime.UtcNow;
+            }
+            finally
+            {
+                _isRefreshingTodayCount = false;
+            }
+        }
         public void StartNewSession()
         {
             _sessionStartTime = DateTime.UtcNow;

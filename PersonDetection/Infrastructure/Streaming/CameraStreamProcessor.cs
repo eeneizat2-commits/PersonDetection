@@ -1324,65 +1324,154 @@ namespace PersonDetection.Infrastructure.Streaming
 
         private async Task BatchSaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)
         {
+            if (persons.Count == 0) return;
+
             try
             {
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-                context.Database.SetCommandTimeout(10);
 
-                var result = new DetectionResult
+                // ✅ REMOVED: context.Database.SetCommandTimeout(10);
+                // Now uses global 60s from Program.cs
+
+                // ✅ Required when using BeginTransaction + EnableRetryOnFailure
+                var strategy = context.Database.CreateExecutionStrategy();
+                var newPersonMappings = new List<(Guid GlobalId, int DbId)>();
+
+                await strategy.ExecuteAsync(async () =>
                 {
-                    CameraId = _cameraId,
-                    Timestamp = DateTime.UtcNow,
-                    TotalDetections = persons.Count,
-                    ValidDetections = persons.Count(p => p.Confidence >= _detectionSettings.ConfidenceThreshold),
-                    UniquePersonCount = _uniquePersonCount
-                };
-                context.DetectionResults.Add(result);
-                await context.SaveChangesAsync(ct);
+                    // Clear tracked entities for clean retry state
+                    context.ChangeTracker.Clear();
+                    newPersonMappings.Clear();
 
-                foreach (var person in persons)
-                {
-                    var uniquePerson = await context.UniquePersons
-                        .FirstOrDefaultAsync(u => u.GlobalPersonId == person.GlobalPersonId, ct);
+                    using var transaction = await context.Database.BeginTransactionAsync(ct);
 
-                    if (uniquePerson == null)
+                    try
                     {
-                        uniquePerson = UniquePerson.Create(person.GlobalPersonId, _cameraId, person.Features);
-                        context.UniquePersons.Add(uniquePerson);
+                        // ═══════════════════════════════════════════════════
+                        // Phase 1: Save DetectionResult to get result.Id
+                        // ═══════════════════════════════════════════════════
+                        var result = new DetectionResult
+                        {
+                            CameraId = _cameraId,
+                            Timestamp = DateTime.UtcNow,
+                            TotalDetections = persons.Count,
+                            ValidDetections = persons.Count(p =>
+                                p.Confidence >= _detectionSettings.ConfidenceThreshold),
+                            UniquePersonCount = _uniquePersonCount
+                        };
+                        context.DetectionResults.Add(result);
                         await context.SaveChangesAsync(ct);
-                        _identityMatcher.SetDbId(person.GlobalPersonId, uniquePerson.Id);
-                    }
-                    else
-                    {
-                        uniquePerson.UpdateLastSeen(_cameraId, person.Features);
-                    }
+                        // result.Id is now a valid DB-generated value
 
-                    context.PersonSightings.Add(PersonSighting.Create(
-                        uniquePerson.Id, _cameraId, result.Id, person.Confidence,
-                        person.BoundingBox.X, person.BoundingBox.Y,
-                        person.BoundingBox.Width, person.BoundingBox.Height));
+                        // ═══════════════════════════════════════════════════
+                        // Phase 2: Batch-fetch ALL existing UniquePersons
+                        //          in ONE query instead of N queries
+                        // ═══════════════════════════════════════════════════
+                        var globalIds = persons
+                            .Select(p => p.GlobalPersonId)
+                            .Distinct()
+                            .ToList();
 
-                    context.DetectedPersons.Add(new DetectedPerson
+                        var existingPersons = await context.UniquePersons
+                            .Where(u => globalIds.Contains(u.GlobalPersonId))
+                            .ToDictionaryAsync(u => u.GlobalPersonId, ct);
+
+                        // ═══════════════════════════════════════════════════
+                        // Phase 3: Create new UniquePersons + update existing
+                        //          Then save ONCE to get all new IDs
+                        // ═══════════════════════════════════════════════════
+                        var newPersonEntries = new List<(TrackedPerson tracked, UniquePerson entity)>();
+
+                        foreach (var person in persons)
+                        {
+                            if (!existingPersons.ContainsKey(person.GlobalPersonId))
+                            {
+                                var newUnique = UniquePerson.Create(
+                                    person.GlobalPersonId, _cameraId, person.Features);
+                                context.UniquePersons.Add(newUnique);
+                                // Add to dictionary to handle duplicate GlobalPersonIds
+                                // within the same batch
+                                existingPersons[person.GlobalPersonId] = newUnique;
+                                newPersonEntries.Add((person, newUnique));
+                            }
+                            else
+                            {
+                                existingPersons[person.GlobalPersonId]
+                                    .UpdateLastSeen(_cameraId, person.Features);
+                            }
+                        }
+
+                        // Single save for ALL new UniquePersons → IDs generated
+                        if (newPersonEntries.Count > 0)
+                        {
+                            await context.SaveChangesAsync(ct);
+                        }
+                        // Now every uniquePerson in existingPersons has a valid .Id
+
+                        // ═══════════════════════════════════════════════════
+                        // Phase 4: Add PersonSightings + DetectedPersons
+                        //          All FK IDs (result.Id, uniquePerson.Id)
+                        //          are now valid
+                        // ═══════════════════════════════════════════════════
+                        foreach (var person in persons)
+                        {
+                            var uniquePerson = existingPersons[person.GlobalPersonId];
+
+                            context.PersonSightings.Add(PersonSighting.Create(
+                                uniquePerson.Id, _cameraId, result.Id, person.Confidence,
+                                person.BoundingBox.X, person.BoundingBox.Y,
+                                person.BoundingBox.Width, person.BoundingBox.Height));
+
+                            context.DetectedPersons.Add(new DetectedPerson
+                            {
+                                GlobalPersonId = person.GlobalPersonId,
+                                Confidence = person.Confidence,
+                                BoundingBox_X = person.BoundingBox.X,
+                                BoundingBox_Y = person.BoundingBox.Y,
+                                BoundingBox_Width = person.BoundingBox.Width,
+                                BoundingBox_Height = person.BoundingBox.Height,
+                                FeatureVector = person.Features != null
+                                    ? string.Join(",", person.Features)
+                                    : null,
+                                DetectedAt = DateTime.UtcNow,
+                                DetectionResultId = result.Id
+                            });
+                        }
+
+                        // Single save for ALL sightings + detected persons
+                        // Also saves UpdateLastSeen changes for existing persons
+                        await context.SaveChangesAsync(ct);
+
+                        // Collect ID mappings before commit
+                        foreach (var (tracked, entity) in newPersonEntries)
+                        {
+                            newPersonMappings.Add((tracked.GlobalPersonId, entity.Id));
+                        }
+
+                        await transaction.CommitAsync(ct);
+                    }
+                    catch
                     {
-                        GlobalPersonId = person.GlobalPersonId,
-                        Confidence = person.Confidence,
-                        BoundingBox_X = person.BoundingBox.X,
-                        BoundingBox_Y = person.BoundingBox.Y,
-                        BoundingBox_Width = person.BoundingBox.Width,
-                        BoundingBox_Height = person.BoundingBox.Height,
-                        FeatureVector = person.Features != null ? string.Join(",", person.Features) : null,
-                        DetectedAt = DateTime.UtcNow,
-                        DetectionResultId = result.Id
-                    });
+                        try { await transaction.RollbackAsync(CancellationToken.None); }
+                        catch { /* Transaction may already be rolled back by SQL Server */ }
+                        throw;
+                    }
+                });
+
+                // ✅ Update identity matcher ONLY after successful commit
+                // This ensures we never store IDs from rolled-back transactions
+                foreach (var (globalId, dbId) in newPersonMappings)
+                {
+                    _identityMatcher.SetDbId(globalId, dbId);
                 }
 
-                await context.SaveChangesAsync(ct);
-                _logger.LogDebug("💾 Saved {Count} persons for camera {Camera}", persons.Count, _cameraId);
+                _logger.LogDebug("💾 Saved {Count} persons for camera {Camera}",
+                    persons.Count, _cameraId);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "DB batch save failed");
+                _logger.LogWarning(ex, "DB batch save failed for camera {Camera}", _cameraId);
             }
         }
 
