@@ -75,6 +75,9 @@ namespace PersonDetection.Infrastructure.Streaming
         private static readonly Scalar _green = new(0, 255, 0);
         private static readonly Scalar _black = new(0, 0, 0);
 
+        private const int ThumbnailWidth = 64;
+        private const int ThumbnailHeight = 128;
+        private const int ThumbnailJpegQuality = 75;
 
         private volatile StreamConnectionState _connectionState = StreamConnectionState.Disconnected;
         private int _reconnectAttempt = 0;
@@ -1326,21 +1329,40 @@ namespace PersonDetection.Infrastructure.Streaming
         {
             if (persons.Count == 0) return;
 
+            // ═══════════════════════════════════════════════════════
+            // Pre-compute thumbnails OUTSIDE retry block
+            // CPU work only — no DB dependency, no need to retry
+            // ═══════════════════════════════════════════════════════
+            byte[]? currentFrame;
+            lock (_frameLock) { currentFrame = _currentJpeg; }
+
+            var thumbnails = new Dictionary<Guid, byte[]>();
+            if (currentFrame != null)
+            {
+                foreach (var person in persons)
+                {
+                    // One thumbnail per GlobalPersonId (skip duplicates in same batch)
+                    if (!thumbnails.ContainsKey(person.GlobalPersonId))
+                    {
+                        var thumb = GenerateThumbnail(currentFrame, person.BoundingBox);
+                        if (thumb != null)
+                        {
+                            thumbnails[person.GlobalPersonId] = thumb;
+                        }
+                    }
+                }
+            }
+
             try
             {
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
-                // ✅ REMOVED: context.Database.SetCommandTimeout(10);
-                // Now uses global 60s from Program.cs
-
-                // ✅ Required when using BeginTransaction + EnableRetryOnFailure
                 var strategy = context.Database.CreateExecutionStrategy();
                 var newPersonMappings = new List<(Guid GlobalId, int DbId)>();
 
                 await strategy.ExecuteAsync(async () =>
                 {
-                    // Clear tracked entities for clean retry state
                     context.ChangeTracker.Clear();
                     newPersonMappings.Clear();
 
@@ -1348,9 +1370,9 @@ namespace PersonDetection.Infrastructure.Streaming
 
                     try
                     {
-                        // ═══════════════════════════════════════════════════
-                        // Phase 1: Save DetectionResult to get result.Id
-                        // ═══════════════════════════════════════════════════
+                        // ═══════════════════════════════════════════
+                        // Phase 1: Save DetectionResult → get result.Id
+                        // ═══════════════════════════════════════════
                         var result = new DetectionResult
                         {
                             CameraId = _cameraId,
@@ -1362,12 +1384,10 @@ namespace PersonDetection.Infrastructure.Streaming
                         };
                         context.DetectionResults.Add(result);
                         await context.SaveChangesAsync(ct);
-                        // result.Id is now a valid DB-generated value
 
-                        // ═══════════════════════════════════════════════════
+                        // ═══════════════════════════════════════════
                         // Phase 2: Batch-fetch ALL existing UniquePersons
-                        //          in ONE query instead of N queries
-                        // ═══════════════════════════════════════════════════
+                        // ═══════════════════════════════════════════
                         var globalIds = persons
                             .Select(p => p.GlobalPersonId)
                             .Distinct()
@@ -1377,43 +1397,50 @@ namespace PersonDetection.Infrastructure.Streaming
                             .Where(u => globalIds.Contains(u.GlobalPersonId))
                             .ToDictionaryAsync(u => u.GlobalPersonId, ct);
 
-                        // ═══════════════════════════════════════════════════
-                        // Phase 3: Create new UniquePersons + update existing
-                        //          Then save ONCE to get all new IDs
-                        // ═══════════════════════════════════════════════════
+                        // ═══════════════════════════════════════════
+                        // Phase 3: Create new + update existing
+                        //          Save ONCE to get all new IDs
+                        // ═══════════════════════════════════════════
                         var newPersonEntries = new List<(TrackedPerson tracked, UniquePerson entity)>();
 
                         foreach (var person in persons)
                         {
+                            // Try to get pre-computed thumbnail for this person
+                            thumbnails.TryGetValue(person.GlobalPersonId, out var thumbnail);
+
                             if (!existingPersons.ContainsKey(person.GlobalPersonId))
                             {
+                                // NEW person — create with thumbnail
                                 var newUnique = UniquePerson.Create(
-                                    person.GlobalPersonId, _cameraId, person.Features);
+                                    person.GlobalPersonId,
+                                    _cameraId,
+                                    person.Features,
+                                    thumbnail);              // ← Thumbnail passed here
+
                                 context.UniquePersons.Add(newUnique);
-                                // Add to dictionary to handle duplicate GlobalPersonIds
-                                // within the same batch
                                 existingPersons[person.GlobalPersonId] = newUnique;
                                 newPersonEntries.Add((person, newUnique));
                             }
                             else
                             {
+                                // EXISTING person — update, fill thumbnail if NULL
                                 existingPersons[person.GlobalPersonId]
-                                    .UpdateLastSeen(_cameraId, person.Features);
+                                    .UpdateLastSeen(
+                                        _cameraId,
+                                        person.Features,
+                                        thumbnail);           // ← Thumbnail passed here
                             }
                         }
 
-                        // Single save for ALL new UniquePersons → IDs generated
                         if (newPersonEntries.Count > 0)
                         {
                             await context.SaveChangesAsync(ct);
                         }
-                        // Now every uniquePerson in existingPersons has a valid .Id
+                        // All UniquePersons now have valid .Id values
 
-                        // ═══════════════════════════════════════════════════
+                        // ═══════════════════════════════════════════
                         // Phase 4: Add PersonSightings + DetectedPersons
-                        //          All FK IDs (result.Id, uniquePerson.Id)
-                        //          are now valid
-                        // ═══════════════════════════════════════════════════
+                        // ═══════════════════════════════════════════
                         foreach (var person in persons)
                         {
                             var uniquePerson = existingPersons[person.GlobalPersonId];
@@ -1434,16 +1461,14 @@ namespace PersonDetection.Infrastructure.Streaming
                                 FeatureVector = person.Features != null
                                     ? string.Join(",", person.Features)
                                     : null,
+                                TrackId = person.TrackId,     // ← TrackId fix
                                 DetectedAt = DateTime.UtcNow,
                                 DetectionResultId = result.Id
                             });
                         }
 
-                        // Single save for ALL sightings + detected persons
-                        // Also saves UpdateLastSeen changes for existing persons
                         await context.SaveChangesAsync(ct);
 
-                        // Collect ID mappings before commit
                         foreach (var (tracked, entity) in newPersonEntries)
                         {
                             newPersonMappings.Add((tracked.GlobalPersonId, entity.Id));
@@ -1454,13 +1479,11 @@ namespace PersonDetection.Infrastructure.Streaming
                     catch
                     {
                         try { await transaction.RollbackAsync(CancellationToken.None); }
-                        catch { /* Transaction may already be rolled back by SQL Server */ }
+                        catch { }
                         throw;
                     }
                 });
 
-                // ✅ Update identity matcher ONLY after successful commit
-                // This ensures we never store IDs from rolled-back transactions
                 foreach (var (globalId, dbId) in newPersonMappings)
                 {
                     _identityMatcher.SetDbId(globalId, dbId);
@@ -1474,7 +1497,38 @@ namespace PersonDetection.Infrastructure.Streaming
                 _logger.LogWarning(ex, "DB batch save failed for camera {Camera}", _cameraId);
             }
         }
+        /// <summary>
+        /// Crop person from frame and generate a small JPEG thumbnail
+        /// </summary>
+        private byte[]? GenerateThumbnail(byte[] jpegData, BoundingBox box)
+        {
+            try
+            {
+                using var frame = Mat.FromImageData(jpegData, ImreadModes.Color);
+                if (frame.Empty()) return null;
 
+                // Clamp bounding box to frame boundaries
+                var x = Math.Max(0, box.X);
+                var y = Math.Max(0, box.Y);
+                var w = Math.Min(box.Width, frame.Width - x);
+                var h = Math.Min(box.Height, frame.Height - y);
+
+                if (w <= 0 || h <= 0) return null;
+
+                using var cropped = new Mat(frame, new Rect(x, y, w, h));
+                using var resized = new Mat();
+                Cv2.Resize(cropped, resized, new CvSize(ThumbnailWidth, ThumbnailHeight));
+
+                Cv2.ImEncode(".jpg", resized, out var thumbnailBytes,
+                    new[] { (int)ImwriteFlags.JpegQuality, ThumbnailJpegQuality });
+
+                return thumbnailBytes;
+            }
+            catch
+            {
+                return null;
+            }
+        }
         #endregion
 
         #region Drawing & Notifications

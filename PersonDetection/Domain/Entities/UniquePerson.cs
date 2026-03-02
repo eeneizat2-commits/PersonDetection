@@ -39,7 +39,8 @@ namespace PersonDetection.Domain.Entities
             };
         }
 
-        public void UpdateLastSeen(int cameraId, float[]? newFeatures = null)
+        // REPLACE this method:
+        public void UpdateLastSeen(int cameraId, float[]? newFeatures = null, byte[]? thumbnail = null)
         {
             LastSeenAt = DateTime.UtcNow;
             LastSeenCameraId = cameraId;
@@ -49,6 +50,12 @@ namespace PersonDetection.Domain.Entities
             {
                 // Update feature vector with exponential moving average
                 FeatureVector = string.Join(",", newFeatures);
+            }
+
+            // Only set thumbnail if we don't already have one
+            if (thumbnail != null && ThumbnailData == null)
+            {
+                ThumbnailData = thumbnail;
             }
         }
 
