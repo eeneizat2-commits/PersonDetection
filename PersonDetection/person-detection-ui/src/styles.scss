@@ -427,3 +427,27 @@ body {
 .mat-mdc-autocomplete-panel {
   background-color: white !important;
 }
+// Style native datetime-local inputs
+input[type="datetime-local"] {
+  position: relative;
+  
+  // Make the calendar icon clickable area larger
+  &::-webkit-calendar-picker-indicator {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+}
+
+// Ensure mat-form-field works well with datetime-local
+.mat-mdc-form-field {
+  &.datetime-field {
+    .mdc-text-field {
+      overflow: visible;
+    }
+  }
+}

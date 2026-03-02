@@ -1,22 +1,7 @@
-// src/app/features/stats-dialog/stats-dialog.component.scss
 :host {
   display: block;
-  // Ensure host takes full dialog space
-  width: 100%;
-  height: 100%;
 }
 
-// Wrapper to catch all clicks
-.stats-dialog-wrapper {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background: white;
-  // Prevent any click-through
-  pointer-events: auto;
-}
-
-// Dialog title - fixed at top
 h2[mat-dialog-title] {
   display: flex;
   align-items: center;
@@ -24,68 +9,63 @@ h2[mat-dialog-title] {
   margin: 0;
   padding: 16px 24px;
   border-bottom: 1px solid #e0e0e0;
-  background: white;
-  flex-shrink: 0;
   
   mat-icon {
     color: #4CAF50;
   }
 }
 
-// Dialog content - scrollable
 mat-dialog-content {
   padding: 16px 24px !important;
-  flex: 1;
-  overflow-y: auto !important;
-  overflow-x: hidden !important;
-  min-height: 200px;
   max-height: calc(90vh - 140px) !important;
-  
-  @media (max-width: 600px) {
-    padding: 12px 16px !important;
-    max-height: calc(90vh - 120px) !important;
-  }
+  overflow-y: auto !important;
 }
 
 // Period selector
 .period-selector {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  flex-direction: column;
+  gap: 16px;
   margin-bottom: 20px;
-  flex-wrap: wrap;
 
-  mat-form-field {
-    min-width: 140px;
-    flex: 0 0 auto;
-    
-    @media (max-width: 600px) {
-      width: 100%;
-      min-width: unset;
-    }
+  > mat-form-field {
+    width: 200px;
   }
 }
 
+// Custom DateTime Range
 .custom-range {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+// DateTime Field Styling
+.datetime-field {
+  min-width: 220px;
   
-  mat-form-field {
-    min-width: 130px;
+  input[type="datetime-local"] {
+    font-family: inherit;
+    font-size: 14px;
     
-    @media (max-width: 600px) {
-      flex: 1 1 calc(50% - 8px);
-      min-width: unset;
+    &::-webkit-calendar-picker-indicator {
+      opacity: 0;
+      position: absolute;
+      right: 0;
+      width: 100%;
+      height: 100%;
+      cursor: pointer;
     }
   }
   
-  button {
-    @media (max-width: 600px) {
-      width: 100%;
-      margin-top: 8px;
-    }
+  mat-icon[matSuffix] {
+    color: #666;
+    cursor: pointer;
   }
 }
 
@@ -109,10 +89,10 @@ mat-dialog-content {
   color: #c62828;
   border-radius: 8px;
   font-size: 14px;
+  margin-bottom: 16px;
   
   mat-icon {
     color: #c62828;
-    flex-shrink: 0;
   }
 }
 
@@ -126,11 +106,6 @@ mat-dialog-content {
   @media (max-width: 768px) {
     grid-template-columns: repeat(2, 1fr);
   }
-  
-  @media (max-width: 480px) {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
-  }
 }
 
 .stat-card {
@@ -140,7 +115,6 @@ mat-dialog-content {
   padding: 12px;
   border-radius: 10px;
   background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%);
-  min-width: 0;
 
   &.total {
     background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
@@ -162,50 +136,26 @@ mat-dialog-content {
     .stat-icon mat-icon { color: #9C27B0; }
   }
 
-  .stat-icon {
-    flex-shrink: 0;
-    
-    mat-icon {
-      font-size: 28px;
-      width: 28px;
-      height: 28px;
-      
-      @media (max-width: 480px) {
-        font-size: 24px;
-        width: 24px;
-        height: 24px;
-      }
-    }
+  .stat-icon mat-icon {
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
   }
 
   .stat-info {
     display: flex;
     flex-direction: column;
-    min-width: 0;
 
     .stat-value {
       font-size: 20px;
       font-weight: 700;
       color: #333;
-      line-height: 1.2;
-      
-      @media (max-width: 480px) {
-        font-size: 18px;
-      }
     }
 
     .stat-label {
       font-size: 10px;
       color: #666;
       text-transform: uppercase;
-      letter-spacing: 0.3px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      
-      @media (max-width: 480px) {
-        font-size: 9px;
-      }
     }
   }
 }
@@ -230,10 +180,6 @@ h3 {
   font-size: 15px;
   font-weight: 600;
   color: #333;
-  
-  &:first-of-type {
-    margin-top: 16px;
-  }
 }
 
 // Daily table
@@ -254,7 +200,6 @@ h3 {
     font-weight: 600;
     font-size: 13px;
     padding: 10px 12px;
-    white-space: nowrap;
   }
 
   td {
@@ -270,7 +215,6 @@ h3 {
   small {
     color: #999;
     margin-left: 4px;
-    font-size: 11px;
   }
 }
 
@@ -283,10 +227,6 @@ h3 {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 10px;
-  
-  @media (max-width: 480px) {
-    grid-template-columns: 1fr;
-  }
 }
 
 .camera-card {
@@ -294,7 +234,6 @@ h3 {
   background: #f8f9fa;
   border-radius: 8px;
   border-left: 4px solid #2196F3;
-  min-width: 0;
 
   .camera-name {
     display: flex;
@@ -303,16 +242,12 @@ h3 {
     font-weight: 600;
     font-size: 13px;
     margin-bottom: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 
     mat-icon {
       font-size: 16px;
       width: 16px;
       height: 16px;
       color: #2196F3;
-      flex-shrink: 0;
     }
   }
 
@@ -322,30 +257,56 @@ h3 {
   }
 }
 
-// Dialog actions - fixed at bottom
+// Dialog actions
 mat-dialog-actions {
   padding: 12px 24px !important;
   border-top: 1px solid #e0e0e0;
   margin: 0 !important;
-  background: white;
-  flex-shrink: 0;
+}// DateTime Field Styling
+.datetime-field {
+  min-width: 220px;
   
-  @media (max-width: 600px) {
-    padding: 12px 16px !important;
+  input[type="datetime-local"] {
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
     
-    button {
-      flex: 1;
+    // Hide the native picker icon (we use our own button)
+    &::-webkit-calendar-picker-indicator {
+      display: none;
+    }
+    
+    &::-webkit-datetime-edit {
+      padding: 0;
+    }
+  }
+  
+  // Style the icon button
+  button[matSuffix] {
+    margin-right: -8px;
+    
+    mat-icon {
+      color: #666;
+    }
+    
+    &:hover mat-icon {
+      color: #1976d2;
     }
   }
 }
-.time-field {
-  width: 100px;
-  min-width: 100px;
-}
 
+// Custom range container
 .custom-range {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  
+  > button[color="primary"] {
+    height: 56px; // Match form field height
+  }
 }
