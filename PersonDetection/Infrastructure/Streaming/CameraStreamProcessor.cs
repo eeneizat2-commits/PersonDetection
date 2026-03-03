@@ -1386,6 +1386,11 @@ namespace PersonDetection.Infrastructure.Streaming
                 // ═══════════════════════════════════════
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+
+                // 👇 ADD THIS — will tell you exactly what connection string it's using
+                var connString = context.Database.GetConnectionString();
+                _logger.LogDebug("🔌 Connection string: {Conn}", connString);
+
                 context.Database.SetCommandTimeout(120);
 
                 var validDetections = persons.Count(p =>
@@ -1440,7 +1445,9 @@ namespace PersonDetection.Infrastructure.Streaming
                         var dbId = _identityMatcher.GetDbId(globalId);
                         if (dbId > 0)
                         {
-                            await context.Database.ExecuteSqlInterpolatedAsync(
+                            using var thumbScope = _serviceProvider.CreateScope();
+                            var thumbContext = thumbScope.ServiceProvider.GetRequiredService<DetectionContext>();
+                            await thumbContext.Database.ExecuteSqlInterpolatedAsync(
                                 $"EXEC sp_UpdatePersonThumbnail @PersonId={dbId}, @ThumbnailData={thumb}",
                                 ct);
                         }
