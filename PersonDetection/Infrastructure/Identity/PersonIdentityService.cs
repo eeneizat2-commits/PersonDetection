@@ -867,17 +867,21 @@ namespace PersonDetection.Infrastructure.Identity
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
                 var todayStart = DateTime.UtcNow.Date;
 
-                _cachedTodayCount = await context.UniquePersons
-                    .AsNoTracking()
-                    .Where(p => p.IsActive &&
-                               (p.FirstSeenAt >= todayStart || p.LastSeenAt >= todayStart))
-                    .CountAsync();
+                // Use raw SQL with NOLOCK to avoid blocking inserts
+                var result = await context.Database
+                    .SqlQueryRaw<int>(
+                        @"SELECT COUNT(*) AS [Value]
+                  FROM [UniquePersons] WITH (NOLOCK) 
+                  WHERE [IsActive] = 1 
+                  AND ([FirstSeenAt] >= @p0 OR [LastSeenAt] >= @p0)",
+                        todayStart)
+                    .FirstOrDefaultAsync();
 
+                _cachedTodayCount = result;
                 _lastTodayCountUpdate = DateTime.UtcNow;
             }
             catch
             {
-                // Fallback: use in-memory identities
                 var todayStart = DateTime.UtcNow.Date;
                 _cachedTodayCount = _globalIdentities.Values
                     .Count(i => i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
