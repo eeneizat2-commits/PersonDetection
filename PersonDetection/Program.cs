@@ -108,7 +108,7 @@ builder.Services.AddDbContext<DetectionContext>(options =>
         sqlOptions =>
         {
             sqlOptions.EnableRetryOnFailure(3, TimeSpan.FromSeconds(10), null);
-            sqlOptions.CommandTimeout(60); // ✅ Increased from 30 to 60
+            sqlOptions.CommandTimeout(60); 
         }),
     ServiceLifetime.Scoped);
 

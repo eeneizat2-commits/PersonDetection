@@ -1394,12 +1394,15 @@ namespace PersonDetection.Infrastructure.Streaming
                 try
                 {
                     using var connection = context.Database.GetDbConnection();
-                    await connection.OpenAsync(ct);
+                    // Set pool timeout explicitly before open
+                    if (connection.State != System.Data.ConnectionState.Open)
+                        await connection.OpenAsync(ct);  // ✅ Only once
 
                     using var command = connection.CreateCommand();
                     command.CommandText = "sp_BatchSaveDetections";
                     command.CommandType = System.Data.CommandType.StoredProcedure;
                     command.CommandTimeout = 120;
+
 
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", _cameraId));
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@TotalDetections", persons.Count));
