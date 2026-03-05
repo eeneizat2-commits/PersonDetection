@@ -108,7 +108,7 @@ builder.Services.AddDbContext<DetectionContext>(options =>
         sqlOptions =>
         {
             sqlOptions.EnableRetryOnFailure(3, TimeSpan.FromSeconds(10), null);
-            sqlOptions.CommandTimeout(60); 
+            sqlOptions.CommandTimeout(120); 
         }),
     ServiceLifetime.Scoped);
 
@@ -228,21 +228,7 @@ builder.Services.AddResponseCompression(options =>
 // HEALTH CHECKS
 // ============================================
 builder.Services.AddHealthChecks()
-    .AddCheck("database", () =>
-    {
-        try
-        {
-            using var scope = builder.Services.BuildServiceProvider().CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-            return db.Database.CanConnect()
-                ? HealthCheckResult.Healthy("Database connection OK")
-                : HealthCheckResult.Unhealthy("Cannot connect to database");
-        }
-        catch (Exception ex)
-        {
-            return HealthCheckResult.Unhealthy($"Database error: {ex.Message}");
-        }
-    })
+    .AddCheck<DatabaseHealthCheck>("database")
     .AddCheck("yolo-model", () =>
     {
         return File.Exists(detectionSettings.YoloModelPath)

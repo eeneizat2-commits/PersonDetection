@@ -84,7 +84,7 @@ namespace PersonDetection.Infrastructure.Streaming
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
 
-        private static readonly SemaphoreSlim _dbSaveSemaphore = new(5);
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(2);
 
         static CameraStreamProcessor()
         {
@@ -1366,8 +1366,13 @@ namespace PersonDetection.Infrastructure.Streaming
                 // ═══════════════════════════════════════
                 // Build JSON payload
                 // ═══════════════════════════════════════
+                var deduplicatedPersons = persons
+                .GroupBy(p => p.GlobalPersonId)
+                .Select(g => g.OrderByDescending(p => p.Confidence).First())
+                .ToList();
+
                 var personsJson = System.Text.Json.JsonSerializer.Serialize(
-                    persons.Select(p => new
+                    deduplicatedPersons.Select(p => new  // ✅ use deduplicatedPersons
                     {
                         GlobalPersonId = p.GlobalPersonId.ToString(),
                         p.Confidence,
