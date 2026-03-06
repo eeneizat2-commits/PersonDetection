@@ -9,7 +9,7 @@ namespace PersonDetection.Infrastructure.Identity
     using PersonDetection.Domain.Services;
     using PersonDetection.Domain.ValueObjects;
     using PersonDetection.Infrastructure.Context;
-    using Microsoft.EntityFrameworkCore;
+
     public class PersonIdentityService : IPersonIdentityMatcher
     {
         private readonly ConcurrentDictionary<Guid, PersonIdentity> _globalIdentities = new();
