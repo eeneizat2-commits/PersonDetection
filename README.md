@@ -9,6 +9,7 @@ A system for detecting and tracking people in videos and streams using OpenCV an
 │   │   ├── CameraConfigController.cs
 │   │   ├── CameraController.cs
 │   │   ├── DetectionController.cs
+│   │   ├── StatsController.cs 
 │   │   └── VideoController.cs
 │   ├── Hubs/
 │   │   └── DetectionHub.cs                   # SignalR real-time communication
@@ -29,6 +30,9 @@ A system for detecting and tracking people in videos and streams using OpenCV an
 │   ├── DTOs/
 │   │   ├── CameraDtos.cs
 │   │   ├── DetectionDtos.cs
+│   │   ├── SpResultDtos.cs                  
+│   │   ├── StatsDtos.cs                     
+│   │   ├── StreamStatusDto.cs 
 │   │   └── VideoDtos.cs
 │   ├── Interfaces/
 │   │   ├── IDetectionEngine.cs
@@ -38,6 +42,7 @@ A system for detecting and tracking people in videos and streams using OpenCV an
 │   ├── Queries/
 │   │   ├── GetActiveCamerasQuery.cs
 │   │   ├── GetCameraStatsQuery.cs
+│   │   ├── GetHistoricalStatsQuery.cs 
 │   │   └── GetVideoStatusQuery.cs
 │   └── Services/
 │       ├── CommandDispatcher.cs
@@ -102,6 +107,7 @@ A system for detecting and tracking people in videos and streams using OpenCV an
 ├── uploads/                                  # Uploaded video files
 │
 ├── appsettings.json                          # Configuration
+├── appsettings.Development.json  
 ├── PersonDetection.http                      # HTTP request tests
 ├── Program.cs                                # Application entry point
 └── WeatherForecast.cs                        # (Default template)
@@ -138,6 +144,9 @@ person-detection-ui/
 │   │   │   │   ├── dashboard.component.scss
 │   │   │   │   └── dashboard.component.ts
 │   │   │   │
+│   │   │   ├── stats-dialog/                 # ✅ NEW - missing from tree
+│   │   │   │   └── (component files)
+│   │   │   │
 │   │   │   ├── video-detail-dialog/
 │   │   │   │   ├── video-detail-dialog.component.html
 │   │   │   │   ├── video-detail-dialog.component.scss
@@ -163,9 +172,12 @@ person-detection-ui/
 │   │   │   ├── camera-config.service.ts
 │   │   │   ├── detection.service.ts
 │   │   │   ├── signalr.service.ts            # SignalR client service
+│   │   │   ├── stats.service.ts 
 │   │   │   └── video.service.ts
 │   │   │
-│   │   ├── shared/                           # Shared components, pipes, directives
+│   │   ├── shared/
+│   │   │   └── pipes/                       
+│   │   │       └── active-cameras.pipe.ts   
 │   │   │
 │   │   ├── app.config.server.ts              # Server-side config (SSR)
 │   │   ├── app.config.ts                     # Client-side config
