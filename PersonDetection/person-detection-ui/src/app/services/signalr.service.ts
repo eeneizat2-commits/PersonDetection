@@ -3,7 +3,7 @@ import { isPlatformBrowser } from '@angular/common';
 import { BehaviorSubject, Subject } from 'rxjs';
 import * as signalR from '@microsoft/signalr';
 import { environment } from '../../environments/environment';
-import { DetectionUpdate, StreamStatusUpdate } from '../core/models/detection.models';
+import { DetectionUpdate, HealthCheckUpdate, StreamConnectionState, StreamStatusUpdate } from '../core/models/detection.models';
 import { VideoProgressUpdate, VideoCompleteUpdate, NewVideoJobUpdate } from '../core/models/video.models';
 
 export enum SignalRConnectionState {
@@ -20,6 +20,11 @@ export class SignalRService {
   private platformId = inject(PLATFORM_ID);
   private hubConnection: signalR.HubConnection | null = null;
   private reconnectAttempt = 0;
+
+  private healthCheckSubject = new Subject<HealthCheckUpdate>();
+  healthCheck$ = this.healthCheckSubject.asObservable();
+
+  private isSubscribedToHealthCheck = false;
 
   private connectionStateSubject = new BehaviorSubject<SignalRConnectionState>(
     SignalRConnectionState.Disconnected
@@ -136,6 +141,36 @@ export class SignalRService {
       setTimeout(() => this.startConnection(), fallbackReconnectDelayMs);
     });
 
+    this.hubConnection.on('HealthCheckUpdate', (data: HealthCheckUpdate) => {
+      console.log('🏥 Health check update:', data);
+      this.healthCheckSubject.next(data);
+
+      // If camera reconnected, also emit a synthetic StreamStatusUpdate
+      // so existing camera-view code picks it up automatically
+      if (data.eventType === 'health_check_reconnected') {
+        const syntheticStatus: StreamStatusUpdate = {
+          cameraId: data.cameraId,
+          state: StreamConnectionState.Connected,
+          stateName: 'Connected',
+          stateMessage: data.message,
+          reconnectAttempt: 0,
+          maxReconnectAttempts: 0,
+          timestamp: data.timestamp,
+          fps: 0,
+          consecutiveErrors: 0
+        };
+        this.streamStatusSubject.next(syntheticStatus);
+
+        if (!this.cameraStatusMap.has(data.cameraId)) {
+          this.cameraStatusMap.set(
+            data.cameraId,
+            new BehaviorSubject<StreamStatusUpdate | null>(null)
+          );
+        }
+        this.cameraStatusMap.get(data.cameraId)!.next(syntheticStatus);
+      }
+    });
+
     try {
       await this.hubConnection.start();
       this.reconnectAttempt = 0;
@@ -159,6 +194,9 @@ export class SignalRService {
     }
     if (this.isSubscribedToStreamStatus) {
       await this.subscribeToStreamStatus();
+    }
+    if (this.isSubscribedToHealthCheck) {          
+      await this.subscribeToHealthCheck();
     }
   }
 
@@ -240,6 +278,34 @@ export class SignalRService {
         console.log(`Unsubscribed from video job ${jobId}`);
       } catch (error) {
         console.error(`Failed to unsubscribe from video job ${jobId}:`, error);
+      }
+    }
+  }
+
+  async subscribeToHealthCheck(): Promise<void> {
+    if (!this.isBrowser) return;
+    if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
+      try {
+        await this.hubConnection.invoke('SubscribeToHealthCheck');
+        this.isSubscribedToHealthCheck = true;
+        console.log('Subscribed to health check');
+      } catch (error) {
+        console.error('Failed to subscribe to health check:', error);
+      }
+    } else {
+      this.isSubscribedToHealthCheck = true;
+    }
+  }
+
+  async unsubscribeFromHealthCheck(): Promise<void> {
+    if (!this.isBrowser) return;
+    if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
+      try {
+        await this.hubConnection.invoke('UnsubscribeFromHealthCheck');
+        this.isSubscribedToHealthCheck = false;
+        console.log('Unsubscribed from health check');
+      } catch (error) {
+        console.error('Failed to unsubscribe from health check:', error);
       }
     }
   }

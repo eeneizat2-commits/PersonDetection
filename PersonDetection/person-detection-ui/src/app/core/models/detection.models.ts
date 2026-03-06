@@ -120,3 +120,10 @@ export interface StreamStatusUpdate {
   fps?: number;
   consecutiveErrors: number;
 }
+
+export interface HealthCheckUpdate {
+  cameraId: number;
+  eventType: 'health_check_started' | 'health_check_reconnected' | 'health_check_failed';
+  message: string;
+  timestamp: string;
+}

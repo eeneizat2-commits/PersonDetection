@@ -4,16 +4,19 @@ namespace PersonDetection.Application.Commands
     using PersonDetection.API.Controllers;
     using PersonDetection.Application.Common;
     using PersonDetection.Domain.Repositories;
+    using PersonDetection.Infrastructure.Services;
 
     public class StopCameraHandler : ICommandHandler<StopCameraCommand, Unit>
     {
         private readonly IUnitOfWork _uow;
         private readonly IStreamProcessorFactory _processorFactory;
+        private readonly CameraHealthCheckService? _healthCheckService;  // ✅ ADD
         private readonly ILogger<StopCameraHandler> _logger;
 
         public StopCameraHandler(
             IUnitOfWork uow,
             IStreamProcessorFactory processorFactory,
+             CameraHealthCheckService? healthCheckService,
             ILogger<StopCameraHandler> logger)
         {
             _uow = uow;
@@ -24,6 +27,9 @@ namespace PersonDetection.Application.Commands
         public async Task<Unit> Handle(StopCameraCommand cmd, CancellationToken ct)
         {
             _logger.LogInformation("Stopping camera {CameraId}", cmd.CameraId);
+
+            // ✅ Mark as manually stopped BEFORE removing processor
+            _healthCheckService?.MarkAsManuallyStopped(cmd.CameraId);
 
             // Stop and remove stream processor
             _processorFactory.Remove(cmd.CameraId);

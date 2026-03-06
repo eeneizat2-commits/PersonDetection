@@ -1,5 +1,6 @@
 ﻿namespace PersonDetection.Application.Interfaces
 {
+    using PersonDetection.Application.DTOs;
     using PersonDetection.Domain.Entities;
     using PersonDetection.Domain.ValueObjects;
 
@@ -23,7 +24,11 @@
         Task<bool> ConnectAsync(string url, CancellationToken ct = default);
         IAsyncEnumerable<byte[]> ReadFramesAsync(CancellationToken ct = default);
         IAsyncEnumerable<byte[]> GetAnnotatedFramesAsync(CancellationToken ct = default);
+        void Disconnect();
         bool IsConnected { get; }
         int CurrentPersonCount { get; }
+        int UniquePersonCount { get; }
+        string StreamUrl { get; }                              // ✅ ADD if missing
+        StreamConnectionState ConnectionState { get; }         // ✅ ADD if missing
     }
 }

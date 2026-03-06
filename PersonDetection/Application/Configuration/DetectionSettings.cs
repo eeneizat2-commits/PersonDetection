@@ -455,4 +455,82 @@ namespace PersonDetection.Application.Configuration
         /// </summary>
         public int FallbackReconnectDelayMs { get; set; } = 5000;
     }
+
+
+    public class HealthCheckSettings
+    {
+        public const string SectionName = "HealthCheckConfig";
+
+        /// <summary>
+        /// Enable/disable the background camera health check service
+        /// </summary>
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>
+        /// Interval in minutes between health check cycles
+        /// </summary>
+        public int CheckIntervalMinutes { get; set; } = 30;
+
+        /// <summary>
+        /// Maximum reconnection attempts per health check cycle per camera
+        /// </summary>
+        public int MaxRetryAttemptsPerCycle { get; set; } = 3;
+
+        /// <summary>
+        /// Delay in seconds between retry attempts within a single cycle
+        /// </summary>
+        public int RetryDelaySeconds { get; set; } = 10;
+
+        /// <summary>
+        /// Send SignalR notification when a camera successfully reconnects
+        /// </summary>
+        public bool NotifyOnReconnection { get; set; } = true;
+
+        /// <summary>
+        /// Send SignalR notification when a camera fails to reconnect
+        /// </summary>
+        public bool NotifyOnFailure { get; set; } = true;
+
+        /// <summary>
+        /// Only check cameras that are marked as enabled in the database
+        /// </summary>
+        public bool CheckOnlyEnabledCameras { get; set; } = true;
+
+        /// <summary>
+        /// Delay in seconds before the first health check after application start
+        /// Allows cameras to finish their initial connection attempts
+        /// </summary>
+        public int InitialDelaySeconds { get; set; } = 60;
+
+        /// <summary>
+        /// Maximum time in seconds to wait for a single camera reconnection attempt
+        /// </summary>
+        public int ConnectionTimeoutSeconds { get; set; } = 30;
+
+        /// <summary>
+        /// Update Camera.LastConnectedAt in database on successful reconnection
+        /// </summary>
+        public bool UpdateLastConnectedOnReconnect { get; set; } = true;
+
+        /// <summary>
+        /// Log level for health check events: "Normal" or "Verbose"
+        /// </summary>
+        public string LogLevel { get; set; } = "Normal";
+
+        /// <summary>
+        /// Check cameras that are in Error state
+        /// </summary>
+        public bool CheckErrorState { get; set; } = true;
+
+        /// <summary>
+        /// Check cameras that are in Stopped state (manually stopped excluded)
+        /// </summary>
+        public bool CheckStoppedState { get; set; } = false;
+
+        /// <summary>
+        /// Maximum total minutes a camera can be in error state before giving up
+        /// 0 = never give up
+        /// </summary>
+        public int MaxErrorDurationMinutes { get; set; } = 0;
+    }
 }

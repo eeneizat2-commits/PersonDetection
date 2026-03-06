@@ -19,6 +19,7 @@ import {
   StreamConnectionState
 } from '../../core/models/detection.models';
 import { environment } from '../../../environments/environment';
+import { HealthCheckUpdate } from '../../core/models/detection.models';
 
 @Component({
   selector: 'app-camera-view',
@@ -62,6 +63,22 @@ export class CameraViewComponent implements OnInit, OnDestroy {
     this.route.params.pipe(takeUntil(this.destroy$)).subscribe(params => {
       this.cameraId = +params['id'];
       this.loadCamera();
+
+      this.signalRService.healthCheck$
+        .pipe(
+          takeUntil(this.destroy$),
+          filter(update => update.cameraId === this.cameraId)
+        )
+        .subscribe(update => {
+          console.log(`🏥 Camera ${this.cameraId} health check:`, update);
+
+          if (update.eventType === 'health_check_reconnected') {
+            // Force refresh stream — the handleStreamStatusChange will also fire
+            // via the synthetic StreamStatusUpdate, but this ensures double coverage
+            this.isStreamStale = false;
+            setTimeout(() => this.refreshStream(), 1000);
+          }
+        });
     });
 
     this.signalRService.detectionUpdate$

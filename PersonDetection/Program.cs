@@ -41,6 +41,8 @@ builder.Services.Configure<PersistenceSettings>(
     builder.Configuration.GetSection(PersistenceSettings.SectionName));
 builder.Services.Configure<TrackingSettings>(
     builder.Configuration.GetSection(TrackingSettings.SectionName));
+builder.Services.Configure<HealthCheckSettings>(
+    builder.Configuration.GetSection(HealthCheckSettings.SectionName));
 
 
 builder.Services.Configure<FormOptions>(options =>
@@ -210,7 +212,8 @@ builder.Services.AddSingleton<IVideoProcessingService>(sp =>
 // ============================================
 builder.Services.AddHostedService<IdentityCleanupService>();
 builder.Services.AddHostedService<DatabaseCleanupService>();
-
+builder.Services.AddSingleton<CameraHealthCheckService>();                    // ✅ ADD
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CameraHealthCheckService>());  // ✅ ADD
 // ============================================
 // RESPONSE COMPRESSION
 // ============================================

@@ -5,6 +5,7 @@
     using PersonDetection.Application.Interfaces;
     using PersonDetection.Domain.Entities;
     using PersonDetection.Domain.Repositories;
+    using PersonDetection.Infrastructure.Services;
 
     public record StartCameraCommand(int CameraId, string Url) : ICommand<CameraSessionDto>;
 
@@ -14,11 +15,13 @@
     {
         private readonly IUnitOfWork _uow;
         private readonly IStreamProcessorFactory _processorFactory;
+        private readonly CameraHealthCheckService? _healthCheckService;  // ✅ ADD
         private readonly ILogger<StartCameraHandler> _logger;
 
         public StartCameraHandler(
             IUnitOfWork uow,
             IStreamProcessorFactory processorFactory,
+            CameraHealthCheckService? healthCheckService,              // ✅ ADD
             ILogger<StartCameraHandler> logger)
         {
             _uow = uow;
@@ -29,6 +32,9 @@
         public async Task<CameraSessionDto> Handle(StartCameraCommand cmd, CancellationToken ct)
         {
             _logger.LogInformation("Starting camera {CameraId} with URL: {Url}", cmd.CameraId, cmd.Url);
+
+            // ✅ Clear manual stop flag
+            _healthCheckService?.ClearManuallyStopped(cmd.CameraId);
 
             // Stop any existing active session
             var existingSession = await _uow.Cameras.GetActiveSessionAsync(cmd.CameraId, ct);
@@ -55,7 +61,7 @@
     {
         IStreamProcessor Create(int cameraId, string url);
         IStreamProcessor? Get(int cameraId);
-        IReadOnlyDictionary<int, IStreamProcessor> GetAll(); 
+        IReadOnlyDictionary<int, IStreamProcessor> GetAll();
         void Remove(int cameraId);
     }
 }

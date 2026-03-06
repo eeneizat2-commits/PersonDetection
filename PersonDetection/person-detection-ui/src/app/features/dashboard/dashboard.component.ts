@@ -87,17 +87,22 @@ export class DashboardComponent implements OnInit, OnDestroy {
     ngOnInit(): void {
         this.loadCameras();
         this.loadGlobalStats();
-        this.subscribeToDetections();
+      this.subscribeToDetections();
+      this.subscribeToHealthChecks();    // ✅ ADD
     }
+
 
     ngOnDestroy(): void {
         this.cameras().filter(c => c.isActive).forEach(camera => {
             this.signalRService.unsubscribeFromCamera(camera.id);
         });
 
+      this.signalRService.unsubscribeFromHealthCheck();  // ✅ ADD
+
         this.destroy$.next();
         this.destroy$.complete();
     }
+
 
     openStatsDialog(): void {
         // Add class to body to prevent background scroll
@@ -254,6 +259,53 @@ export class DashboardComponent implements OnInit, OnDestroy {
         this.loadGlobalStats();
     }
 
+  private subscribeToHealthChecks(): void {
+    // Subscribe to health check SignalR group
+    this.signalRService.subscribeToHealthCheck();
+
+    this.signalRService.healthCheck$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((update) => {
+        console.log('🏥 Dashboard health check update:', update);
+
+        switch (update.eventType) {
+          case 'health_check_reconnected':
+            // Camera came back online — update camera list
+            this.cameras.update(cameras =>
+              cameras.map(c =>
+                c.id === update.cameraId
+                  ? { ...c, isActive: true }
+                  : c
+              )
+            );
+
+            // Subscribe to detection updates for this camera
+            this.signalRService.subscribeToCamera(update.cameraId);
+
+            this.snackBar.open(
+              `📡 Camera ${update.cameraId} reconnected automatically`,
+              '✓',
+              { duration: 5000, panelClass: 'success-snackbar' }
+            );
+
+            // Refresh global stats
+            this.loadGlobalStats();
+            break;
+
+          case 'health_check_failed':
+            this.snackBar.open(
+              `⚠️ Camera ${update.cameraId}: Auto-reconnect failed`,
+              '✕',
+              { duration: 5000, panelClass: 'error-snackbar' }
+            );
+            break;
+
+          case 'health_check_started':
+            console.log(`🏥 Health check started for camera ${update.cameraId}`);
+            break;
+        }
+      });
+  }
     openAddDialog(): void {
         const dialogRef = this.dialog.open(AddCameraDialogComponent, {
             width: '500px',

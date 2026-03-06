@@ -66,5 +66,19 @@
             _logger.LogInformation("Client {ConnectionId} unsubscribed from stream status",
                 Context.ConnectionId);
         }
+
+        public async Task SubscribeToHealthCheck()
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, "health_check");
+            _logger.LogInformation("Client {ConnectionId} subscribed to health check",
+                Context.ConnectionId);
+        }
+
+        public async Task UnsubscribeFromHealthCheck()
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, "health_check");
+            _logger.LogInformation("Client {ConnectionId} unsubscribed from health check",
+                Context.ConnectionId);
+        }
     }
 }
