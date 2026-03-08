@@ -1,14 +1,15 @@
 ﻿// PersonDetection.Infrastructure/Identity/PersonIdentityService.cs
 namespace PersonDetection.Infrastructure.Identity
 {
-    using System.Collections.Concurrent;
     using Microsoft.EntityFrameworkCore;
     using Microsoft.Extensions.DependencyInjection;
     using Microsoft.Extensions.Logging;
     using PersonDetection.Application.Configuration;
+    using PersonDetection.Application.DTOs;
     using PersonDetection.Domain.Services;
     using PersonDetection.Domain.ValueObjects;
     using PersonDetection.Infrastructure.Context;
+    using System.Collections.Concurrent;
 
     public class PersonIdentityService : IPersonIdentityMatcher
     {
@@ -154,66 +155,123 @@ namespace PersonDetection.Infrastructure.Identity
 
         private async Task InitializeFromDatabaseAsync()
         {
-            await _initLock.WaitAsync();
+            await _initLock.WaitAsync();                    // 1. ✅ SAME — Lock
             try
             {
-                if (_isInitialized) return;
+                if (_isInitialized) return;                 // 2. ✅ SAME — Skip if done
 
-                _logger.LogInformation("📥 Loading identities from last {Hours} hours...", _settings.DatabaseLoadHours);
+                // 3. ✅ SAME — Log start
+                _logger.LogInformation(
+                    "📥 Loading identities from last {Hours} hours (max {Max})...",
+                    _settings.DatabaseLoadHours,
+                    _settings.MaxIdentitiesInMemory);
 
+                // 4. ✅ SAME — Create DB scope
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
+                // ✅ NEW: Set explicit timeout (fixes the timeout crash)
+                context.Database.SetCommandTimeout(TimeSpan.FromSeconds(180));
+
+                // 5. ✅ SAME — Calculate cutoff
                 var cutoff = DateTime.UtcNow.AddHours(-_settings.DatabaseLoadHours);
 
-                var persons = await context.UniquePersons
-                    .Where(p => p.IsActive && p.LastSeenAt >= cutoff)
-                    .OrderByDescending(p => p.LastSeenAt)
-                    .ThenByDescending(p => p.TotalSightings)
-                    .Take(_settings.MaxIdentitiesInMemory)
-                    .ToListAsync();
+                // 6. ✅ NEW: Load in BATCHES instead of one big query
+                var batchSize = 200;
+                var loaded = 0;
+                var skip = 0;
+                var maxToLoad = _settings.MaxIdentitiesInMemory;
 
-                int loaded = 0;
-                foreach (var person in persons)
+                while (loaded < maxToLoad)
                 {
-                    var features = person.GetFeatureArray();
-                    if (features != null && features.Length == _settings.FeatureVectorDimension)
+                    var currentBatchSize = Math.Min(batchSize, maxToLoad - loaded);
+
+                    List<BatchPersonDto> batch;
+                    try
                     {
-                        var identity = new PersonIdentity
-                        {
-                            GlobalPersonId = person.GlobalPersonId,
-                            DbId = person.Id,
-                            FeatureVector = features,
-                            FirstSeen = person.FirstSeenAt,
-                            LastSeen = person.LastSeenAt,
-                            LastActiveTime = person.LastSeenAt,
-                            FirstCameraId = person.FirstSeenCameraId,
-                            LastCameraId = person.LastSeenCameraId,
-                            MatchCount = person.TotalSightings,
-                            IsFromDatabase = true,
-                            IsConfirmedByConfidence = true
-                        };
-
-                        identity.SeenOnCameras.Add(person.FirstSeenCameraId);
-                        identity.SeenOnCameras.Add(person.LastSeenCameraId);
-
-                        _globalIdentities[person.GlobalPersonId] = identity;
-                        _confirmedPersons[person.GlobalPersonId] = true;
-                        loaded++;
+                        // ✅ NEW: Select ONLY needed columns (no ThumbnailData, no Label)
+                        // ✅ SAME: Same Where/OrderBy/Take logic
+                        batch = await context.UniquePersons
+                            .Where(p => p.IsActive && p.LastSeenAt >= cutoff)   // ✅ SAME filter
+                            .OrderByDescending(p => p.LastSeenAt)               // ✅ SAME order
+                            .ThenByDescending(p => p.TotalSightings)            // ✅ SAME order
+                            .Skip(skip)                                         // ✅ NEW: pagination
+                            .Take(currentBatchSize)                             // ✅ SAME: limited
+                            .Select(p => new BatchPersonDto                     // ✅ NEW: lightweight DTO
+                            {
+                                Id = p.Id,                                      // ✅ SAME data
+                                GlobalPersonId = p.GlobalPersonId,              // ✅ SAME data
+                                FeatureVector = p.FeatureVector,                // ✅ SAME data
+                                FirstSeenAt = p.FirstSeenAt,                    // ✅ SAME data
+                                LastSeenAt = p.LastSeenAt,                      // ✅ SAME data
+                                FirstSeenCameraId = p.FirstSeenCameraId,        // ✅ SAME data
+                                LastSeenCameraId = p.LastSeenCameraId,          // ✅ SAME data
+                                TotalSightings = p.TotalSightings               // ✅ SAME data
+                            })
+                            .AsNoTracking()                                     // ✅ NEW: performance
+                            .ToListAsync();
                     }
+                    catch (Exception ex)
+                    {
+                        // ✅ NEW: Per-batch error handling (doesn't lose already loaded data)
+                        _logger.LogWarning(ex,
+                            "📥 Batch load failed at skip={Skip}, loaded so far: {Loaded}",
+                            skip, loaded);
+                        break;
+                    }
+
+                    if (batch.Count == 0) break;
+
+                    // 7. ✅ SAME LOOP LOGIC — identical to old code
+                    foreach (var person in batch)
+                    {
+                        var features = ParseFeatureVector(person.FeatureVector);  // ✅ SAME as GetFeatureArray()
+                        if (features != null && features.Length == _settings.FeatureVectorDimension)
+                        {
+                            // 8. ✅ SAME — Create identity (identical fields)
+                            var identity = new PersonIdentity
+                            {
+                                GlobalPersonId = person.GlobalPersonId,       // ✅ SAME
+                                DbId = person.Id,                             // ✅ SAME
+                                FeatureVector = features,                     // ✅ SAME
+                                FirstSeen = person.FirstSeenAt,               // ✅ SAME
+                                LastSeen = person.LastSeenAt,                 // ✅ SAME
+                                LastActiveTime = person.LastSeenAt,           // ✅ SAME
+                                FirstCameraId = person.FirstSeenCameraId,     // ✅ SAME
+                                LastCameraId = person.LastSeenCameraId,       // ✅ SAME
+                                MatchCount = person.TotalSightings,           // ✅ SAME
+                                IsFromDatabase = true,                        // ✅ SAME
+                                IsConfirmedByConfidence = true                // ✅ SAME
+                            };
+
+                            identity.SeenOnCameras.Add(person.FirstSeenCameraId);  // ✅ SAME
+                            identity.SeenOnCameras.Add(person.LastSeenCameraId);   // ✅ SAME
+
+                            // 9. ✅ SAME — Store in dictionaries
+                            _globalIdentities[person.GlobalPersonId] = identity;
+                            _confirmedPersons[person.GlobalPersonId] = true;
+                            loaded++;
+                        }
+                    }
+
+                    skip += batch.Count;
+                    if (batch.Count < currentBatchSize) break;  // ✅ NEW: stop when no more data
                 }
 
+                // 10. ✅ SAME — Mark initialized
                 _isInitialized = true;
-                _logger.LogWarning("✅ Loaded {Count} identities from database", loaded);
+                _logger.LogWarning("✅ Loaded {Count} identities from database (scanned {Scanned})",
+                    loaded, skip);
             }
             catch (Exception ex)
             {
+                // 11. ✅ SAME — Error handling
                 _logger.LogError(ex, "❌ Failed to load from database");
                 _isInitialized = true;
             }
             finally
             {
-                _initLock.Release();
+                _initLock.Release();                        // 12. ✅ SAME — Release lock
             }
         }
 
@@ -859,37 +917,85 @@ namespace PersonDetection.Infrastructure.Identity
             return _cachedTodayCount;
         }
 
+        private float[]? ParseFeatureVector(string? featureData)
+        {
+            if (string.IsNullOrEmpty(featureData)) return null;       
+
+            try
+            {
+                var parts = featureData.Split(',');                    
+
+                // ✅ NEW: Validate dimension before parsing
+                if (parts.Length != _settings.FeatureVectorDimension) return null;
+
+                var features = new float[parts.Length];
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    if (!float.TryParse(parts[i].Trim(),              
+                        System.Globalization.NumberStyles.Float,        
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out features[i]))
+                    {
+                        return null;                                  
+                    }
+                }
+                return features;                                      
+            }
+            catch
+            {
+                return null;                                           
+            }
+        }
+
         private async Task RefreshTodayCountAsync()
         {
             try
             {
-                using var scope = _serviceProvider.CreateScope();
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-                var todayStart = DateTime.UtcNow.Date;
+                using var scope = _serviceProvider.CreateScope();                    
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();  
 
-                // Use raw SQL with NOLOCK to avoid blocking inserts
-                var result = await context.Database
-                    .SqlQueryRaw<int>(
-                        @"SELECT COUNT(*) AS [Value]
-                  FROM [UniquePersons] WITH (NOLOCK) 
-                  WHERE [IsActive] = 1 
-                  AND ([FirstSeenAt] >= @p0 OR [LastSeenAt] >= @p0)",
-                        todayStart)
-                    .FirstOrDefaultAsync();
+                // ✅ NEW: Raw ADO.NET instead of EF Core (more reliable)
+                var connection = context.Database.GetDbConnection();
+                if (connection.State != System.Data.ConnectionState.Open)
+                    await connection.OpenAsync();
 
-                _cachedTodayCount = result;
-                _lastTodayCountUpdate = DateTime.UtcNow;
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+            SELECT COUNT(*) 
+            FROM [UniquePersons] WITH (NOLOCK) 
+            WHERE [IsActive] = 1 
+              AND ([FirstSeenAt] >= @todayStart OR [LastSeenAt] >= @todayStart)";
+                // ✅ SAME SQL query
+                command.CommandTimeout = 30;                                        //  explicit timeout
+
+                var param = command.CreateParameter();
+                param.ParameterName = "@todayStart";
+                param.Value = DateTime.UtcNow.Date;                                
+                command.Parameters.Add(param);
+
+                var result = await command.ExecuteScalarAsync();
+                _cachedTodayCount = Convert.ToInt32(result);                       
+                _lastTodayCountUpdate = DateTime.UtcNow;                           
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogWarning(ex, "⚠️ Failed to refresh today count");       
+
+                // ✅ SAME fallback logic
                 var todayStart = DateTime.UtcNow.Date;
                 _cachedTodayCount = _globalIdentities.Values
-                    .Count(i => i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
+                    .Count(i =>
+                    {
+                        lock (i.SyncLock)                                         
+                        {
+                            return i.FirstSeen >= todayStart || i.LastSeen >= todayStart;
+                        }
+                    });
                 _lastTodayCountUpdate = DateTime.UtcNow;
             }
             finally
             {
-                _isRefreshingTodayCount = false;
+                _isRefreshingTodayCount = false;                                  
             }
         }
         public void StartNewSession()
