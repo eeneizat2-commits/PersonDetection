@@ -144,7 +144,7 @@ person-detection-ui/
 │   │   │   │   ├── dashboard.component.scss
 │   │   │   │   └── dashboard.component.ts
 │   │   │   │
-│   │   │   ├── stats-dialog/                 # ✅ NEW - missing from tree
+│   │   │   ├── stats-dialog/                 
 │   │   │   │   └── (component files)
 │   │   │   │
 │   │   │   ├── video-detail-dialog/
