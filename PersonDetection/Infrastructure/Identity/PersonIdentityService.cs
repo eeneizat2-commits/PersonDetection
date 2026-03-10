@@ -951,42 +951,54 @@ namespace PersonDetection.Infrastructure.Identity
         {
             try
             {
-                using var scope = _serviceProvider.CreateScope();                    
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();  
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
-                // ✅ NEW: Raw ADO.NET instead of EF Core (more reliable)
                 var connection = context.Database.GetDbConnection();
                 if (connection.State != System.Data.ConnectionState.Open)
                     await connection.OpenAsync();
 
                 using var command = connection.CreateCommand();
+
+                // ✅ UNION approach — each part uses its own index efficiently
+                // ✅ Only checks today's data, not all 158K rows
                 command.CommandText = @"
-            SELECT COUNT(*) 
-            FROM [UniquePersons] WITH (NOLOCK) 
-            WHERE [IsActive] = 1 
-              AND ([FirstSeenAt] >= @todayStart OR [LastSeenAt] >= @todayStart)";
-                // ✅ SAME SQL query
-                command.CommandTimeout = 30;                                        //  explicit timeout
+            SELECT COUNT(DISTINCT Id) FROM (
+                -- Part 1: New persons first seen today (uses IX_UniquePersons_Active_FirstSeen)
+                SELECT Id 
+                FROM [UniquePersons] WITH (NOLOCK) 
+                WHERE [IsActive] = 1 
+                  AND [FirstSeenAt] >= @todayStart
+
+                UNION
+
+                -- Part 2: Old persons seen again today (uses IX_UniquePersons_Active_LastSeen)
+                SELECT Id 
+                FROM [UniquePersons] WITH (NOLOCK) 
+                WHERE [IsActive] = 1 
+                  AND [LastSeenAt] >= @todayStart
+                  AND [FirstSeenAt] < @todayStart
+            ) AS TodayPersons";
+                command.CommandTimeout = 120;
 
                 var param = command.CreateParameter();
                 param.ParameterName = "@todayStart";
-                param.Value = DateTime.UtcNow.Date;                                
+                param.Value = DateTime.UtcNow.Date;
                 command.Parameters.Add(param);
 
                 var result = await command.ExecuteScalarAsync();
-                _cachedTodayCount = Convert.ToInt32(result);                       
-                _lastTodayCountUpdate = DateTime.UtcNow;                           
+                _cachedTodayCount = Convert.ToInt32(result);
+                _lastTodayCountUpdate = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "⚠️ Failed to refresh today count");       
+                _logger.LogWarning(ex, "⚠️ Failed to refresh today count, using in-memory fallback");
 
-                // ✅ SAME fallback logic
                 var todayStart = DateTime.UtcNow.Date;
                 _cachedTodayCount = _globalIdentities.Values
                     .Count(i =>
                     {
-                        lock (i.SyncLock)                                         
+                        lock (i.SyncLock)
                         {
                             return i.FirstSeen >= todayStart || i.LastSeen >= todayStart;
                         }
@@ -995,7 +1007,7 @@ namespace PersonDetection.Infrastructure.Identity
             }
             finally
             {
-                _isRefreshingTodayCount = false;                                  
+                _isRefreshingTodayCount = false;
             }
         }
         public void StartNewSession()
