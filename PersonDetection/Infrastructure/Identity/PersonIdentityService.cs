@@ -27,6 +27,7 @@ namespace PersonDetection.Infrastructure.Identity
         private readonly SemaphoreSlim _initLock = new(1, 1);
         private DateTime _sessionStartTime = DateTime.UtcNow;
         private readonly ConcurrentDictionary<Guid, DateTime> _sessionPersons = new();
+        private readonly ConcurrentDictionary<Guid, bool> _pendingSave = new();
 
         private int _frameWidth = 1280;
         private int _frameHeight = 720;
@@ -639,7 +640,18 @@ namespace PersonDetection.Infrastructure.Identity
                     "🆕 {Reason} (pending): {Id} cam={Cam} conf={Conf:P0}",
                     reason, newId.ToString()[..8], cameraId, confidence);
             }
+            if (shouldConfirm)
+            {
+                _confirmedPersons[newId] = true;
+                identity.IsConfirmedByConfidence = true;
 
+                // ✅ NEW: Mark for immediate save
+                _pendingSave[newId] = true;
+
+                _logger.LogInformation(
+                    "🆕✅ {Reason} [{ConfirmType}]: {Id} cam={Cam} conf={Conf:P0} (total={Total})",
+                    reason, confirmType, newId.ToString()[..8], cameraId, confidence, _confirmedPersons.Count);
+            }
             return newId;
         }
 
@@ -749,16 +761,61 @@ namespace PersonDetection.Infrastructure.Identity
             _sessionPersons[personId] = DateTime.UtcNow;
         }
 
+
+        /// <summary>
+        /// Check if a person identity has been saved to the database
+        /// </summary>
+        public bool IsIdentitySavedToDb(Guid personId)
+        {
+            if (_globalIdentities.TryGetValue(personId, out var identity))
+            {
+                return identity.DbId > 0;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Get all confirmed persons that haven't been saved to DB yet
+        /// These MUST be saved before they can be cleaned up
+        /// </summary>
+        public List<(Guid GlobalPersonId, float[] Features, int CameraId)> GetUnsavedConfirmedPersons()
+        {
+            var unsaved = new List<(Guid, float[], int)>();
+
+            foreach (var kvp in _confirmedPersons)
+            {
+                if (_globalIdentities.TryGetValue(kvp.Key, out var identity))
+                {
+                    if (identity.DbId == 0 && identity.FeatureVector != null)
+                    {
+                        lock (identity.SyncLock)
+                        {
+                            unsaved.Add((
+                                identity.GlobalPersonId,
+                                (float[])identity.FeatureVector.Clone(),
+                                identity.LastCameraId
+                            ));
+                        }
+                    }
+                }
+            }
+
+            return unsaved;
+        }
         #endregion
 
         #region Public Query Methods
 
+        // ✅ UPDATE existing method:
         public void OnIdentitySavedToDatabase(Guid personId, int dbId)
         {
             if (_globalIdentities.TryGetValue(personId, out var identity))
             {
                 identity.DbId = dbId;
                 identity.IsFromDatabase = true;
+
+                // ✅ NEW: Clear pending save flag
+                _pendingSave.TryRemove(personId, out _);
             }
         }
 
@@ -830,18 +887,41 @@ namespace PersonDetection.Infrastructure.Identity
             var threshold = DateTime.UtcNow - expirationTime;
 
             var toRemove = _globalIdentities
-                .Where(kvp => !kvp.Value.IsFromDatabase &&
-                             !_confirmedPersons.ContainsKey(kvp.Key) &&
-                             kvp.Value.LastSeen < threshold)
+                .Where(kvp =>
+                    !kvp.Value.IsFromDatabase &&                          // Not from DB
+                    kvp.Value.DbId == 0 &&                                // ✅ NEW: Not yet saved to DB
+                    !_confirmedPersons.ContainsKey(kvp.Key) &&            // Not confirmed
+                    kvp.Value.LastSeen < threshold)                       // Not seen recently
                 .Select(kvp => kvp.Key)
                 .ToList();
 
+            // ✅ NEW: Separately handle confirmed but expired identities
+            var confirmedToRemove = _globalIdentities
+                .Where(kvp =>
+                    kvp.Value.DbId > 0 &&                                 // Already saved to DB
+                    !kvp.Value.IsCurrentlyActive &&                        // Not active right now
+                    kvp.Value.LastSeen < threshold &&                      // Not seen recently
+                    _confirmedPersons.ContainsKey(kvp.Key))                // Was confirmed
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            // Remove unconfirmed, unsaved identities (these are noise)
             foreach (var id in toRemove)
             {
                 _globalIdentities.TryRemove(id, out _);
                 _entryTracking.TryRemove(id, out _);
             }
 
+            // Remove confirmed identities that are saved to DB and expired
+            // (they're safe in DB, just freeing memory)
+            foreach (var id in confirmedToRemove)
+            {
+                _globalIdentities.TryRemove(id, out _);
+                // ✅ Do NOT remove from _confirmedPersons — keep the count accurate
+                _entryTracking.TryRemove(id, out _);
+            }
+
+            // Cleanup stale trackers
             var staleTrackers = _trackStability
                 .Where(kvp => (DateTime.UtcNow - kvp.Value.LastUpdate).TotalSeconds > 10)
                 .Select(kvp => kvp.Key)
@@ -851,15 +931,22 @@ namespace PersonDetection.Infrastructure.Identity
                 _trackStability.TryRemove(key, out _);
             }
 
+            // Cleanup camera active persons
             foreach (var (_, activeDict) in _cameraActivePersons)
             {
-                var expired = activeDict.Where(kvp => kvp.Value < threshold).Select(kvp => kvp.Key).ToList();
-                foreach (var id in expired) activeDict.TryRemove(id, out _);
+                var expired = activeDict
+                    .Where(kvp => kvp.Value < threshold)
+                    .Select(kvp => kvp.Key)
+                    .ToList();
+                foreach (var id in expired)
+                    activeDict.TryRemove(id, out _);
             }
 
-            if (toRemove.Count > 0)
+            if (toRemove.Count > 0 || confirmedToRemove.Count > 0)
             {
-                _logger.LogDebug("🧹 Cleaned {Count} unconfirmed identities", toRemove.Count);
+                _logger.LogDebug(
+                    "🧹 Cleaned {Unconfirmed} unconfirmed + {Confirmed} confirmed (saved in DB) identities",
+                    toRemove.Count, confirmedToRemove.Count);
             }
         }
 

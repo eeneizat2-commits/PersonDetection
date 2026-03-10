@@ -17,6 +17,7 @@ namespace PersonDetection.Infrastructure.Streaming
     using PersonDetection.Infrastructure.Context;
     using PersonDetection.Infrastructure.Detection;
     using PersonDetection.Infrastructure.ReId;
+    using System.Collections.Concurrent;
     using System.Diagnostics;
     using System.Runtime.CompilerServices;
     using System.Threading.Channels;
@@ -84,7 +85,8 @@ namespace PersonDetection.Infrastructure.Streaming
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
 
-        private static readonly SemaphoreSlim _dbSaveSemaphore = new(2);
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(3);
+
 
         static CameraStreamProcessor()
         {
@@ -1331,7 +1333,7 @@ namespace PersonDetection.Infrastructure.Streaming
         {
             if (persons.Count == 0) return;
 
-            if (!await _dbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(10), ct))
+            if (!await _dbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(20), ct))
             {
                 _logger.LogDebug("⏭️ Skipping DB save for camera {Camera} — DB is busy", _cameraId);
                 return;
@@ -1411,7 +1413,7 @@ namespace PersonDetection.Infrastructure.Streaming
                     using var command = connection.CreateCommand();
                     command.CommandText = "sp_BatchSaveDetections";
                     command.CommandType = System.Data.CommandType.StoredProcedure;
-                    command.CommandTimeout = 120;
+                    command.CommandTimeout = 180;
 
 
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", _cameraId));

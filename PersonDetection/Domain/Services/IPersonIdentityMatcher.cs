@@ -30,6 +30,9 @@ namespace PersonDetection.Domain.Services
         int GetTodayUniqueCount();
         int GetSessionUniqueCount();
 
+        bool IsIdentitySavedToDb(Guid personId);
+        List<(Guid GlobalPersonId, float[] Features, int CameraId)> GetUnsavedConfirmedPersons();
+
         void CleanupExpired(TimeSpan expirationTime);
         void ClearAllIdentities();
         void ClearCameraIdentities(int cameraId);
