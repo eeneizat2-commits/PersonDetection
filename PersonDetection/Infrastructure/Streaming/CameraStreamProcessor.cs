@@ -1088,18 +1088,30 @@ namespace PersonDetection.Infrastructure.Streaming
         /// </summary>
         private void CleanupStaleTracks(DateTime now)
         {
-            var staleTrackIds = _stableTracks
-                .Where(kvp =>
+            // ✅ FIX: Take a snapshot to avoid modification during iteration
+            var snapshot = _stableTracks.ToList();
+
+            var staleTrackIds = new List<int>();
+
+            foreach (var kvp in snapshot)
+            {
+                // ✅ FIX: Null check to prevent NullReferenceException
+                if (kvp.Value == null)
                 {
-                    var age = (now - kvp.Value.LastSeen).TotalSeconds;
-                    // Use configurable timeouts
-                    var maxAge = kvp.Value.IsFastWalker
-                        ? _trackingSettings.FastWalkerTrackTimeoutSeconds
-                        : _trackingSettings.NormalTrackTimeoutSeconds;
-                    return age > maxAge;
-                })
-                .Select(kvp => kvp.Key)
-                .ToList();
+                    staleTrackIds.Add(kvp.Key);
+                    continue;
+                }
+
+                var age = (now - kvp.Value.LastSeen).TotalSeconds;
+                var maxAge = kvp.Value.IsFastWalker
+                    ? _trackingSettings.FastWalkerTrackTimeoutSeconds
+                    : _trackingSettings.NormalTrackTimeoutSeconds;
+
+                if (age > maxAge)
+                {
+                    staleTrackIds.Add(kvp.Key);
+                }
+            }
 
             foreach (var id in staleTrackIds)
             {
