@@ -14,6 +14,10 @@
         private readonly PersistenceSettings _settings;
         private readonly ILogger<DatabaseCleanupService> _logger;
 
+        // ✅ NEW: Flag to let other services know cleanup is running
+        private volatile bool _isRunningMaintenance = false;
+        public bool IsRunningMaintenance => _isRunningMaintenance;
+
         public DatabaseCleanupService(
             IServiceProvider serviceProvider,
             IOptions<PersistenceSettings> settings,
@@ -36,6 +40,8 @@
                         TimeSpan.FromMinutes(_settings.CleanupIntervalMinutes),
                         stoppingToken);
 
+                    _isRunningMaintenance = true;
+
                     await CleanupOldRecords(stoppingToken);
                     await MaintainIndexes(stoppingToken);
                 }
@@ -46,6 +52,10 @@
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error in database cleanup service");
+                }
+                finally
+                {
+                    _isRunningMaintenance = false;
                 }
             }
 
@@ -67,7 +77,6 @@
 
             foreach (var cameraId in cameras)
             {
-                // Delete in batches to avoid timeout
                 var idsToDelete = await context.DetectionResults
                     .Where(d => d.CameraId == cameraId)
                     .OrderByDescending(d => d.Timestamp)
@@ -77,29 +86,28 @@
 
                 if (idsToDelete.Count == 0) continue;
 
-                // Batch delete — 500 at a time
                 const int batchSize = 500;
                 for (int i = 0; i < idsToDelete.Count; i += batchSize)
                 {
                     var batch = idsToDelete.Skip(i).Take(batchSize).ToList();
 
-                    // Delete child records first (DetectedPersons)
                     await context.DetectedPersons
                         .Where(dp => batch.Contains(dp.DetectionResultId))
                         .ExecuteDeleteAsync(ct);
 
-                    // Delete child records (PersonSightings)
                     await context.PersonSightings
                         .Where(ps => ps.DetectionResultId.HasValue
                             && batch.Contains(ps.DetectionResultId.Value))
                         .ExecuteDeleteAsync(ct);
 
-                    // Delete parent records
                     await context.DetectionResults
                         .Where(d => batch.Contains(d.Id))
                         .ExecuteDeleteAsync(ct);
 
                     totalDeleted += batch.Count;
+
+                    // ✅ NEW: Small delay between batches to reduce lock contention
+                    await Task.Delay(100, ct);
                 }
             }
 
@@ -116,9 +124,8 @@
             {
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-                context.Database.SetCommandTimeout(300); // 5 min for index ops
+                context.Database.SetCommandTimeout(600); // 10 min for ONLINE index ops
 
-                // Check fragmentation on critical tables
                 var tables = new[]
                 {
                     ("UniquePersons", "IX_UniquePersons_GlobalPersonId", 70),
@@ -136,7 +143,6 @@
                 {
                     try
                     {
-                        // Check fragmentation
                         var fragResult = await context.Database
                             .SqlQueryRaw<decimal>(
                                 @"SELECT CAST(ISNULL(avg_fragmentation_in_percent, 0) AS decimal(10,2)) AS [Value]
@@ -155,19 +161,55 @@
                                 "🔧 Rebuilding {Index} on {Table} (fragmentation: {Frag:F1}%)",
                                 indexName, table, fragResult);
 
-                            await context.Database.ExecuteSqlRawAsync(
-                                $"ALTER INDEX [{indexName}] ON [{table}] REBUILD WITH (FILLFACTOR = {fillFactor})",
-                                ct);
+                            // ✅ FIX: Try ONLINE rebuild first (doesn't lock table)
+                            bool rebuilt_online = false;
+                            try
+                            {
+                                await context.Database.ExecuteSqlRawAsync(
+                                    $"ALTER INDEX [{indexName}] ON [{table}] REBUILD WITH (ONLINE = ON, FILLFACTOR = {fillFactor})",
+                                    ct);
+                                rebuilt_online = true;
+                            }
+                            catch
+                            {
+                                // ONLINE rebuild not supported on this SQL edition
+                                // Fall back to REORGANIZE (never locks table)
+                                _logger.LogDebug(
+                                    "ONLINE rebuild not supported for {Index}, using REORGANIZE",
+                                    indexName);
+                            }
+
+                            if (!rebuilt_online)
+                            {
+                                if (fragResult > 50)
+                                {
+                                    // ✅ High fragmentation: REBUILD with short lock
+                                    // Use MAXDOP 1 to minimize lock duration
+                                    await context.Database.ExecuteSqlRawAsync(
+                                        $"ALTER INDEX [{indexName}] ON [{table}] REBUILD WITH (FILLFACTOR = {fillFactor}, MAXDOP = 1)",
+                                        ct);
+                                }
+                                else
+                                {
+                                    // ✅ Medium fragmentation: REORGANIZE (no lock!)
+                                    await context.Database.ExecuteSqlRawAsync(
+                                        $"ALTER INDEX [{indexName}] ON [{table}] REORGANIZE",
+                                        ct);
+                                }
+                            }
 
                             rebuilt++;
 
                             _logger.LogInformation(
-                                "✅ Rebuilt {Index} on {Table}", indexName, table);
+                                "✅ Rebuilt {Index} on {Table} (online={Online})",
+                                indexName, table, rebuilt_online);
+
+                            // ✅ NEW: Delay between index ops to reduce contention
+                            await Task.Delay(2000, ct);
                         }
                     }
                     catch (Exception ex)
                     {
-                        // Index might not exist — that's OK, skip it
                         _logger.LogDebug(
                             "Skipped index {Index} on {Table}: {Error}",
                             indexName, table, ex.Message);
@@ -176,12 +218,24 @@
 
                 if (rebuilt > 0)
                 {
-                    // Update statistics after rebuilds
-                    await context.Database.ExecuteSqlRawAsync(
-                        "UPDATE STATISTICS UniquePersons; " +
-                        "UPDATE STATISTICS DetectedPersons; " +
-                        "UPDATE STATISTICS PersonSightings; " +
-                        "UPDATE STATISTICS DetectionResults;", ct);
+                    // ✅ FIX: Update statistics ONE TABLE AT A TIME with delays
+                    var statsTables = new[] { "UniquePersons", "DetectedPersons",
+                                              "PersonSightings", "DetectionResults" };
+
+                    foreach (var table in statsTables)
+                    {
+                        try
+                        {
+                            await context.Database.ExecuteSqlRawAsync(
+                                $"UPDATE STATISTICS [{table}]", ct);
+                            await Task.Delay(1000, ct); // ✅ Delay between each
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug("Failed to update stats for {Table}: {Error}",
+                                table, ex.Message);
+                        }
+                    }
 
                     _logger.LogInformation("🔧 Rebuilt {Count} fragmented indexes", rebuilt);
                 }

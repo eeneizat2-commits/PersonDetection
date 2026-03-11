@@ -85,7 +85,7 @@ namespace PersonDetection.Infrastructure.Streaming
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
 
-        private static readonly SemaphoreSlim _dbSaveSemaphore = new(3);
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(5);
 
 
         static CameraStreamProcessor()
@@ -1305,19 +1305,20 @@ namespace PersonDetection.Infrastructure.Streaming
         private async Task BatchDatabaseSaveLoop(CancellationToken ct)
         {
             var saveInterval = TimeSpan.FromSeconds(_persistenceSettings.SaveIntervalSeconds);
-            var personsToSave = new List<TrackedPerson>();
+
+            // ✅ NEW: Add random jitter so cameras don't all save at the same time
+            var jitter = TimeSpan.FromMilliseconds(new Random(_cameraId).Next(0, 1000));
+            await Task.Delay(jitter, ct);
 
             _logger.LogDebug("💾 Database save loop started for camera {Id}", _cameraId);
 
-            while (!ct.IsCancellationRequested && !_disposed)  // ✅ CHANGED: removed _isConnected
+            while (!ct.IsCancellationRequested && !_disposed)
             {
                 try
                 {
                     await Task.Delay(saveInterval, ct);
 
-                    // Skip saving during reconnection
-                    if (!_isConnected) continue;  // ✅ ADD THIS
-
+                    if (!_isConnected) continue;
                     if (!_persistenceSettings.SaveToDatabase) continue;
 
                     List<TrackedPerson> persons;
@@ -1418,15 +1419,19 @@ namespace PersonDetection.Infrastructure.Streaming
                 try
                 {
                     using var connection = context.Database.GetDbConnection();
-                    // Set pool timeout explicitly before open
                     if (connection.State != System.Data.ConnectionState.Open)
-                        await connection.OpenAsync(ct);  // ✅ Only once
+                        await connection.OpenAsync(ct);
+
+                    // ✅ NEW: Set lock timeout — don't wait forever if tables are locked
+                    using var lockCmd = connection.CreateCommand();
+                    lockCmd.CommandText = "SET LOCK_TIMEOUT 10000"; // 10 seconds max wait for locks
+                    lockCmd.CommandTimeout = 15;
+                    await lockCmd.ExecuteNonQueryAsync(ct);
 
                     using var command = connection.CreateCommand();
                     command.CommandText = "sp_BatchSaveDetections";
                     command.CommandType = System.Data.CommandType.StoredProcedure;
-                    command.CommandTimeout = 180;
-
+                    command.CommandTimeout = 120; // ✅ Reduced from 180 to 120
 
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", _cameraId));
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@TotalDetections", persons.Count));
@@ -1434,7 +1439,6 @@ namespace PersonDetection.Infrastructure.Streaming
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@UniquePersonCount", _uniquePersonCount));
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@PersonsJson", personsJson));
 
-                    // Read returned person ID mappings
                     using var reader = await command.ExecuteReaderAsync(ct);
                     while (await reader.ReadAsync(ct))
                     {
@@ -1446,12 +1450,20 @@ namespace PersonDetection.Infrastructure.Streaming
                     _logger.LogDebug("💾 SP saved {Count} persons for camera {Camera}",
                         persons.Count, _cameraId);
                 }
+                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
+                {
+                    // ✅ NEW: Specific handling for lock timeout
+                    _logger.LogWarning(
+                        "💾 Lock timeout for camera {Camera} — index maintenance may be running, will retry next cycle",
+                        _cameraId);
+                    return;
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
                         "💾 SP save failed for camera {Camera} — will retry next cycle",
                         _cameraId);
-                    return; // Don't try thumbnails if main save failed
+                    return;
                 }
 
                 // ═══════════════════════════════════════
