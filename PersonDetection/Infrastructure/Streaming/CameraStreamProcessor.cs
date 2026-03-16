@@ -942,8 +942,14 @@ namespace PersonDetection.Infrastructure.Streaming
             var newCenterX = newBox.X + newBox.Width / 2f;
             var newCenterY = newBox.Y + newBox.Height / 2f;
 
-            foreach (var track in _stableTracks.Values)
+            // ✅ FIX: Take snapshot to avoid modification during iteration
+            var snapshot = _stableTracks.Values.ToList();
+
+            foreach (var track in snapshot)
             {
+                // ✅ FIX: Null check
+                if (track?.LastBox == null) continue;
+
                 // Calculate distance to track's LAST position
                 var lastCenterX = track.LastBox.X + track.LastBox.Width / 2f;
                 var lastCenterY = track.LastBox.Y + track.LastBox.Height / 2f;
@@ -1456,6 +1462,24 @@ namespace PersonDetection.Infrastructure.Streaming
                     _logger.LogWarning(
                         "💾 Lock timeout for camera {Camera} — index maintenance may be running, will retry next cycle",
                         _cameraId);
+                    return;
+                }
+                // Keep these catches as safety nets
+                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
+                {
+                    _logger.LogWarning("💾 Lock timeout camera {Camera} — retry next cycle", _cameraId);
+                    return;
+                }
+                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 2601 || ex.Number == 2627)
+                {
+                    _logger.LogWarning("💾 Duplicate key camera {Camera} — retry next cycle", _cameraId);
+                    return;
+                }
+                // ✅ ADD: Catch the re-raised error 50000 from SP's RAISERROR
+                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+                {
+                    _logger.LogWarning("💾 SP error camera {Camera}: {Msg} — retry next cycle",
+                        _cameraId, ex.Message);
                     return;
                 }
                 catch (Exception ex)
