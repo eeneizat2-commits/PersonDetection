@@ -126,6 +126,13 @@
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
                 context.Database.SetCommandTimeout(600); // 10 min for ONLINE index ops
 
+                var hour = DateTime.Now.Hour;
+                if (hour >= 5 && hour < 24)
+                {
+                    _logger.LogDebug("🔧 Skipping index maintenance — not in window (0-5 AM)");
+                    return;
+                }
+
                 var tables = new[]
                 {
                     ("UniquePersons", "IX_UniquePersons_GlobalPersonId", 70),

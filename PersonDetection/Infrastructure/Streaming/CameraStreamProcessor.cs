@@ -23,6 +23,7 @@ namespace PersonDetection.Infrastructure.Streaming
     using System.Threading.Channels;
     using CvPoint = OpenCvSharp.Point;
     using CvSize = OpenCvSharp.Size;
+    using PersonDetection.Infrastructure.Services;
 
     public class CameraStreamProcessor : IStreamProcessor
     {
@@ -551,7 +552,6 @@ namespace PersonDetection.Infrastructure.Streaming
             {
                 try
                 {
-                    // Wait during reconnection instead of exiting
                     if (!_isConnected)
                     {
                         await Task.Delay(500, ct);
@@ -567,19 +567,39 @@ namespace PersonDetection.Infrastructure.Streaming
                     List<TrackedPerson> persons;
                     lock (_detectionLock) { persons = _currentTrackedPersons.ToList(); }
 
-                    using var frame = Mat.FromImageData(jpeg, ImreadModes.Color);
-                    if (frame.Empty()) continue;
+                    // 🆕 FIX: try/finally + catch OpenCV OOM
+                    Mat? frame = null;
+                    try
+                    {
+                        frame = Cv2.ImDecode(jpeg, ImreadModes.Color);
+                        if (frame == null || frame.Empty())
+                        {
+                            frame?.Dispose();
+                            continue;
+                        }
 
-                    DrawOptimizedAnnotations(frame, persons);
+                        DrawOptimizedAnnotations(frame, persons);
 
-                    Cv2.ImEncode(".jpg", frame, out var annotatedJpeg, encodeParams);
-                    _streamChannel.Writer.TryWrite(annotatedJpeg);
+                        Cv2.ImEncode(".jpg", frame, out var annotatedJpeg, encodeParams);
+                        _streamChannel.Writer.TryWrite(annotatedJpeg);
+                    }
+                    catch (OpenCVException ex)
+                    {
+                        // 🆕 FIX: Back off on memory pressure
+                        _logger.LogWarning("⚠️ Camera {Id}: OpenCV memory pressure: {Msg}",
+                            _cameraId, ex.Message);
+                        await Task.Delay(1000, ct);
+                    }
+                    finally
+                    {
+                        frame?.Dispose(); // 🆕 FIX: Always dispose
+                    }
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Stream output error");
-                    await Task.Delay(100, ct);
+                    await Task.Delay(200, ct); // 🆕 Was: 100
                 }
             }
 
@@ -1094,14 +1114,11 @@ namespace PersonDetection.Infrastructure.Streaming
         /// </summary>
         private void CleanupStaleTracks(DateTime now)
         {
-            // ✅ FIX: Take a snapshot to avoid modification during iteration
             var snapshot = _stableTracks.ToList();
-
             var staleTrackIds = new List<int>();
 
             foreach (var kvp in snapshot)
             {
-                // ✅ FIX: Null check to prevent NullReferenceException
                 if (kvp.Value == null)
                 {
                     staleTrackIds.Add(kvp.Key);
@@ -1122,6 +1139,22 @@ namespace PersonDetection.Infrastructure.Streaming
             foreach (var id in staleTrackIds)
             {
                 _stableTracks.Remove(id);
+            }
+
+            // 🆕 NEW: Cap _seenPersonIds to prevent unbounded growth
+            if (_seenPersonIds.Count > 5000)
+            {
+                var activeIds = _stableTracks.Values
+                    .Where(t => t != null)
+                    .Select(t => t.GlobalPersonId)
+                    .ToHashSet();
+
+                var countBefore = _seenPersonIds.Count;
+                _seenPersonIds.IntersectWith(activeIds);
+
+                _logger.LogInformation(
+                    "🧹 Camera {Id}: Cleaned seenPersonIds {Before} → {After}",
+                    _cameraId, countBefore, _seenPersonIds.Count);
             }
         }
 
@@ -1348,9 +1381,24 @@ namespace PersonDetection.Infrastructure.Streaming
             _logger.LogDebug("💾 Database save loop ended for camera {Id}", _cameraId);
         }
 
+        // ❌ FIND the entire BatchSaveToDatabaseAsync method
+        // 🆕 REPLACE WITH:
+
         private async Task BatchSaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)
         {
             if (persons.Count == 0) return;
+
+            // 🆕 NEW: Skip save if database maintenance is running
+            try
+            {
+                var dbCleanup = _serviceProvider.GetService<DatabaseCleanupService>();
+                if (dbCleanup?.IsRunningMaintenance == true)
+                {
+                    _logger.LogDebug("⏭️ Skipping DB save for camera {Camera} — maintenance running", _cameraId);
+                    return;
+                }
+            }
+            catch { }
 
             if (!await _dbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(20), ct))
             {
@@ -1360,40 +1408,16 @@ namespace PersonDetection.Infrastructure.Streaming
 
             try
             {
-                // ═══════════════════════════════════════
-                // Pre-compute thumbnails (CPU only)
-                // ═══════════════════════════════════════
-                var thumbnails = new Dictionary<Guid, byte[]>();
-                try
-                {
-                    byte[]? currentFrame;
-                    lock (_frameLock) { currentFrame = _currentJpeg; }
+                // 🆕 FIX: Single decode for all thumbnails
+                var thumbnails = GenerateAllThumbnails(persons);
 
-                    if (currentFrame != null)
-                    {
-                        foreach (var person in persons)
-                        {
-                            if (!thumbnails.ContainsKey(person.GlobalPersonId))
-                            {
-                                var thumb = GenerateThumbnail(currentFrame, person.BoundingBox);
-                                if (thumb != null)
-                                    thumbnails[person.GlobalPersonId] = thumb;
-                            }
-                        }
-                    }
-                }
-                catch { thumbnails.Clear(); }
-
-                // ═══════════════════════════════════════
-                // Build JSON payload
-                // ═══════════════════════════════════════
                 var deduplicatedPersons = persons
-                .GroupBy(p => p.GlobalPersonId)
-                .Select(g => g.OrderByDescending(p => p.Confidence).First())
-                .ToList();
+                    .GroupBy(p => p.GlobalPersonId)
+                    .Select(g => g.OrderByDescending(p => p.Confidence).First())
+                    .ToList();
 
                 var personsJson = System.Text.Json.JsonSerializer.Serialize(
-                    deduplicatedPersons.Select(p => new  // ✅ use deduplicatedPersons
+                    deduplicatedPersons.Select(p => new
                     {
                         GlobalPersonId = p.GlobalPersonId.ToString(),
                         p.Confidence,
@@ -1407,13 +1431,9 @@ namespace PersonDetection.Infrastructure.Streaming
                         p.TrackId
                     }));
 
-                // ═══════════════════════════════════════
-                // Call Stored Procedure — ONE round-trip
-                // ═══════════════════════════════════════
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
-                // 👇 ADD THIS — will tell you exactly what connection string it's using
                 var connString = context.Database.GetConnectionString();
                 _logger.LogDebug("🔌 Connection string: {Conn}", connString);
 
@@ -1428,16 +1448,15 @@ namespace PersonDetection.Infrastructure.Streaming
                     if (connection.State != System.Data.ConnectionState.Open)
                         await connection.OpenAsync(ct);
 
-                    // ✅ NEW: Set lock timeout — don't wait forever if tables are locked
                     using var lockCmd = connection.CreateCommand();
-                    lockCmd.CommandText = "SET LOCK_TIMEOUT 10000"; // 10 seconds max wait for locks
+                    lockCmd.CommandText = "SET LOCK_TIMEOUT 10000";
                     lockCmd.CommandTimeout = 15;
                     await lockCmd.ExecuteNonQueryAsync(ct);
 
                     using var command = connection.CreateCommand();
                     command.CommandText = "sp_BatchSaveDetections";
                     command.CommandType = System.Data.CommandType.StoredProcedure;
-                    command.CommandTimeout = 120; // ✅ Reduced from 180 to 120
+                    command.CommandTimeout = 120;
 
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", _cameraId));
                     command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@TotalDetections", persons.Count));
@@ -1456,18 +1475,11 @@ namespace PersonDetection.Infrastructure.Streaming
                     _logger.LogDebug("💾 SP saved {Count} persons for camera {Camera}",
                         persons.Count, _cameraId);
                 }
+                // 🆕 FIX: Removed duplicate catch block — only ONE for 1222
                 catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
                 {
-                    // ✅ NEW: Specific handling for lock timeout
                     _logger.LogWarning(
-                        "💾 Lock timeout for camera {Camera} — index maintenance may be running, will retry next cycle",
-                        _cameraId);
-                    return;
-                }
-                // Keep these catches as safety nets
-                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
-                {
-                    _logger.LogWarning("💾 Lock timeout camera {Camera} — retry next cycle", _cameraId);
+                        "💾 Lock timeout for camera {Camera} — will retry next cycle", _cameraId);
                     return;
                 }
                 catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 2601 || ex.Number == 2627)
@@ -1475,7 +1487,6 @@ namespace PersonDetection.Infrastructure.Streaming
                     _logger.LogWarning("💾 Duplicate key camera {Camera} — retry next cycle", _cameraId);
                     return;
                 }
-                // ✅ ADD: Catch the re-raised error 50000 from SP's RAISERROR
                 catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
                 {
                     _logger.LogWarning("💾 SP error camera {Camera}: {Msg} — retry next cycle",
@@ -1490,26 +1501,47 @@ namespace PersonDetection.Infrastructure.Streaming
                     return;
                 }
 
-                // ═══════════════════════════════════════
-                // Post-save: Update thumbnails (non-critical)
-                // ═══════════════════════════════════════
-                foreach (var (globalId, thumb) in thumbnails)
+                // 🆕 FIX: Batch all thumbnails in ONE connection
+                if (thumbnails.Count > 0)
                 {
                     try
                     {
-                        var dbId = _identityMatcher.GetDbId(globalId);
-                        if (dbId > 0)
+                        using var thumbScope = _serviceProvider.CreateScope();
+                        var thumbContext = thumbScope.ServiceProvider.GetRequiredService<DetectionContext>();
+                        var conn = thumbContext.Database.GetDbConnection();
+
+                        if (conn.State != System.Data.ConnectionState.Open)
+                            await conn.OpenAsync(ct);
+
+                        foreach (var (globalId, thumb) in thumbnails)
                         {
-                            using var thumbScope = _serviceProvider.CreateScope();
-                            var thumbContext = thumbScope.ServiceProvider.GetRequiredService<DetectionContext>();
-                            await thumbContext.Database.ExecuteSqlInterpolatedAsync(
-                                $"EXEC sp_UpdatePersonThumbnail @PersonId={dbId}, @ThumbnailData={thumb}",
-                                ct);
+                            var dbId = _identityMatcher.GetDbId(globalId);
+                            if (dbId <= 0) continue;
+
+                            try
+                            {
+                                using var cmd = conn.CreateCommand();
+                                cmd.CommandText = "EXEC sp_UpdatePersonThumbnail @PersonId=@pid, @ThumbnailData=@data";
+                                cmd.CommandTimeout = 15;
+
+                                var pidParam = cmd.CreateParameter();
+                                pidParam.ParameterName = "@pid";
+                                pidParam.Value = dbId;
+                                cmd.Parameters.Add(pidParam);
+
+                                var dataParam = cmd.CreateParameter();
+                                dataParam.ParameterName = "@data";
+                                dataParam.Value = thumb;
+                                cmd.Parameters.Add(dataParam);
+
+                                await cmd.ExecuteNonQueryAsync(ct);
+                            }
+                            catch { }
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Non-critical — thumbnail will be added next time
+                        _logger.LogDebug(ex, "Thumbnail batch failed — non-critical");
                     }
                 }
             }
@@ -1528,34 +1560,50 @@ namespace PersonDetection.Infrastructure.Streaming
         /// Crop person from frame and generate a small JPEG thumbnail
         /// </summary>
         /// </summary>
-        private byte[]? GenerateThumbnail(byte[] jpegData, BoundingBox box)
+
+        private Dictionary<Guid, byte[]> GenerateAllThumbnails(List<TrackedPerson> persons)
         {
+            var thumbnails = new Dictionary<Guid, byte[]>();
+
             try
             {
-                using var frame = Mat.FromImageData(jpegData, ImreadModes.Color);
-                if (frame.Empty()) return null;
+                byte[]? currentFrame;
+                lock (_frameLock) { currentFrame = _currentJpeg; }
+                if (currentFrame == null) return thumbnails;
 
-                // Clamp bounding box to frame boundaries
-                var x = Math.Max(0, box.X);
-                var y = Math.Max(0, box.Y);
-                var w = Math.Min(box.Width, frame.Width - x);
-                var h = Math.Min(box.Height, frame.Height - y);
+                // 🆕 FIX: SINGLE decode for ALL persons
+                using var frame = Mat.FromImageData(currentFrame, ImreadModes.Color);
+                if (frame.Empty()) return thumbnails;
 
-                if (w <= 0 || h <= 0) return null;
+                foreach (var person in persons)
+                {
+                    if (thumbnails.ContainsKey(person.GlobalPersonId)) continue;
 
-                using var cropped = new Mat(frame, new Rect(x, y, w, h));
-                using var resized = new Mat();
-                Cv2.Resize(cropped, resized, new CvSize(ThumbnailWidth, ThumbnailHeight));
+                    try
+                    {
+                        var box = person.BoundingBox;
+                        var x = Math.Max(0, box.X);
+                        var y = Math.Max(0, box.Y);
+                        var w = Math.Min(box.Width, frame.Width - x);
+                        var h = Math.Min(box.Height, frame.Height - y);
+                        if (w <= 0 || h <= 0) continue;
 
-                Cv2.ImEncode(".jpg", resized, out var thumbnailBytes,
-                    new[] { (int)ImwriteFlags.JpegQuality, ThumbnailJpegQuality });
-
-                return thumbnailBytes;
+                        using var cropped = new Mat(frame, new Rect(x, y, w, h));
+                        using var resized = new Mat();
+                        Cv2.Resize(cropped, resized, new CvSize(ThumbnailWidth, ThumbnailHeight));
+                        Cv2.ImEncode(".jpg", resized, out var thumbBytes,
+                            new[] { (int)ImwriteFlags.JpegQuality, ThumbnailJpegQuality });
+                        thumbnails[person.GlobalPersonId] = thumbBytes;
+                    }
+                    catch { }
+                }
             }
             catch
             {
-                return null;
+                thumbnails.Clear();
             }
+
+            return thumbnails;
         }
         #endregion
 

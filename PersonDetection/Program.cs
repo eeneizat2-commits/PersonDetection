@@ -211,7 +211,8 @@ builder.Services.AddSingleton<IVideoProcessingService>(sp =>
 // BACKGROUND SERVICES
 // ============================================
 builder.Services.AddHostedService<IdentityCleanupService>();
-builder.Services.AddHostedService<DatabaseCleanupService>();
+builder.Services.AddSingleton<DatabaseCleanupService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DatabaseCleanupService>()); 
 builder.Services.AddSingleton<CameraHealthCheckService>();                    // ✅ ADD
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CameraHealthCheckService>());  // ✅ ADD
 // ============================================
