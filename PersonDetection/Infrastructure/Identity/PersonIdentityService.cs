@@ -1038,9 +1038,7 @@ namespace PersonDetection.Infrastructure.Identity
 
         public int GetTodayUniqueCount()
         {
-            // Return cached value immediately (never blocks)
-            // Trigger async refresh if cache is stale
-            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 10
+            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 30
                 && !_isRefreshingTodayCount)
             {
                 _isRefreshingTodayCount = true;
@@ -1087,22 +1085,17 @@ namespace PersonDetection.Infrastructure.Identity
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
-                // 🆕 FIX: Own connection with short timeout
                 var connString = context.Database.GetConnectionString();
                 using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
                 await connection.OpenAsync();
 
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
-            SELECT COUNT(DISTINCT Id) FROM (
-                SELECT Id FROM [UniquePersons] WITH (NOLOCK) 
-                WHERE [IsActive] = 1 AND [FirstSeenAt] >= @todayStart
-                UNION
-                SELECT Id FROM [UniquePersons] WITH (NOLOCK) 
-                WHERE [IsActive] = 1 AND [LastSeenAt] >= @todayStart
-                  AND [FirstSeenAt] < @todayStart
-            ) AS TodayPersons";
-                command.CommandTimeout = 60; // 🆕 Was: 120
+            SELECT COUNT(*) 
+            FROM [UniquePersons] WITH (NOLOCK) 
+            WHERE [IsActive] = 1 
+              AND ([FirstSeenAt] >= @todayStart OR [LastSeenAt] >= @todayStart)";
+                command.CommandTimeout = 10;
 
                 var param = command.CreateParameter();
                 param.ParameterName = "@todayStart";
@@ -1115,7 +1108,7 @@ namespace PersonDetection.Infrastructure.Identity
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "⚠️ Failed to refresh today count, using in-memory fallback");
+                _logger.LogWarning("⚠️ RefreshTodayCount failed, using in-memory fallback: {Msg}", ex.Message);
 
                 var todayStart = DateTime.UtcNow.Date;
                 _cachedTodayCount = _globalIdentities.Values

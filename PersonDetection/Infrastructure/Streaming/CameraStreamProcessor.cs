@@ -86,7 +86,7 @@ namespace PersonDetection.Infrastructure.Streaming
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
 
-        private static readonly SemaphoreSlim _dbSaveSemaphore = new(5);
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(2);
 
 
         static CameraStreamProcessor()
@@ -1450,7 +1450,7 @@ namespace PersonDetection.Infrastructure.Streaming
 
                     using var lockCmd = connection.CreateCommand();
                     lockCmd.CommandText = "SET LOCK_TIMEOUT 10000";
-                    lockCmd.CommandTimeout = 15;
+                    lockCmd.CommandTimeout = 13;
                     await lockCmd.ExecuteNonQueryAsync(ct);
 
                     using var command = connection.CreateCommand();
