@@ -119,7 +119,7 @@ namespace PersonDetection.Infrastructure.Streaming
             public int StableFrameCount { get; set; }
         }
 
-        private readonly Dictionary<int, StableTrack> _stableTracks = new();
+        private readonly ConcurrentDictionary<int, StableTrack> _stableTracks = new();
         private int _nextTrackId = 1;
 
         private class StableTrack
@@ -842,7 +842,7 @@ namespace PersonDetection.Infrastructure.Streaming
                             bool shouldConfirm = false;
                             string confirmReason = "";
 
-                            var trackInfo = _stableTracks.GetValueOrDefault(tracked.TrackId);
+                            _stableTracks.TryGetValue(tracked.TrackId, out var trackInfo);
                             bool isFastWalker = trackInfo?.IsFastWalker ?? false;
 
                             // FAST WALKER: Confirm on single frame with features (configurable)
@@ -1138,7 +1138,7 @@ namespace PersonDetection.Infrastructure.Streaming
 
             foreach (var id in staleTrackIds)
             {
-                _stableTracks.Remove(id);
+                _stableTracks.TryRemove(id, out _);
             }
 
             // 🆕 NEW: Cap _seenPersonIds to prevent unbounded growth
