@@ -119,7 +119,7 @@ namespace PersonDetection.Infrastructure.Services
                     // Wait a bit before retrying to avoid tight error loops
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+                        await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken);
                     }
                     catch (OperationCanceledException)
                     {
