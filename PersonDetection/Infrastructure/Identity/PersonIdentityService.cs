@@ -1082,20 +1082,18 @@ namespace PersonDetection.Infrastructure.Identity
         {
             try
             {
-                using var scope = _serviceProvider.CreateScope();
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;Trusted_Connection=True;TrustServerCertificate=True;Connection Timeout=5;Command Timeout=10;Max Pool Size=2;Min Pool Size=0;Pooling=true;Application Name=TodayCount;";
 
-                var connString = context.Database.GetConnectionString();
                 using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
                 await connection.OpenAsync();
 
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
-            SELECT COUNT(*) 
-            FROM [UniquePersons] WITH (NOLOCK) 
+            SELECT COUNT_BIG(*) 
+            FROM [UniquePersons] WITH (NOLOCK, READUNCOMMITTED) 
             WHERE [IsActive] = 1 
-              AND ([FirstSeenAt] >= @todayStart OR [LastSeenAt] >= @todayStart)";
-                command.CommandTimeout = 10;
+              AND [LastSeenAt] >= @todayStart";
+                command.CommandTimeout = 5;
 
                 var param = command.CreateParameter();
                 param.ParameterName = "@todayStart";
@@ -1108,17 +1106,21 @@ namespace PersonDetection.Infrastructure.Identity
             }
             catch (Exception ex)
             {
-                _logger.LogWarning("⚠️ RefreshTodayCount failed, using in-memory fallback: {Msg}", ex.Message);
+                _logger.LogWarning("⚠️ RefreshTodayCount failed: {Msg}", ex.Message);
 
-                var todayStart = DateTime.UtcNow.Date;
-                _cachedTodayCount = _globalIdentities.Values
-                    .Count(i =>
-                    {
-                        lock (i.SyncLock)
+                if (_cachedTodayCount == 0)
+                {
+                    var todayStart = DateTime.UtcNow.Date;
+                    _cachedTodayCount = _globalIdentities.Values
+                        .Count(i =>
                         {
-                            return i.FirstSeen >= todayStart || i.LastSeen >= todayStart;
-                        }
-                    });
+                            lock (i.SyncLock)
+                            {
+                                return i.FirstSeen >= todayStart || i.LastSeen >= todayStart;
+                            }
+                        });
+                }
+
                 _lastTodayCountUpdate = DateTime.UtcNow;
             }
             finally
