@@ -18,6 +18,9 @@
         private volatile bool _isRunningMaintenance = false;
         public bool IsRunningMaintenance => _isRunningMaintenance;
 
+        private DateTime _lastDailyStatsUpdate = DateTime.MinValue;
+        private DateTime _lastCleanupRun = DateTime.MinValue;
+
         public DatabaseCleanupService(
             IServiceProvider serviceProvider,
             IOptions<PersistenceSettings> settings,
@@ -36,14 +39,22 @@
             {
                 try
                 {
-                    await Task.Delay(
-                        TimeSpan.FromMinutes(_settings.CleanupIntervalMinutes),
-                        stoppingToken);
+                    // ✅ NEW: Update DailyStats every 60 seconds (lightweight, no locks on other tables)
+                    await UpdateDailyStatsIfNeeded(stoppingToken);
 
-                    _isRunningMaintenance = true;
+                    // Short sleep — DailyStats check runs frequently, cleanup runs on interval
+                    await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
 
-                    await CleanupOldRecords(stoppingToken);
-                    await MaintainIndexes(stoppingToken);
+                    // Heavy cleanup only on the configured interval
+                    if ((DateTime.UtcNow - _lastCleanupRun).TotalMinutes >= _settings.CleanupIntervalMinutes)
+                    {
+                        _isRunningMaintenance = true;
+
+                        await CleanupOldRecords(stoppingToken);
+                        await MaintainIndexes(stoppingToken);
+
+                        _lastCleanupRun = DateTime.UtcNow;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -60,6 +71,47 @@
             }
 
             _logger.LogInformation("🧹 Database cleanup service stopped");
+        }
+
+        // ✅ NEW: Replaces Step 7 from sp_BatchSaveDetections
+        // Runs ONCE every 60 seconds instead of 10 times every 10 seconds
+        private async Task UpdateDailyStatsIfNeeded(CancellationToken ct)
+        {
+            if ((DateTime.UtcNow - _lastDailyStatsUpdate).TotalSeconds < 60)
+                return;
+
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+                context.Database.SetCommandTimeout(30);
+
+                await context.Database.ExecuteSqlRawAsync(@"
+                DECLARE @Now DATETIME2 = SYSUTCDATETIME();
+                DECLARE @TodayDate DATE = CAST(@Now AS DATE);
+                DECLARE @TodayCount INT;
+
+                SELECT @TodayCount = COUNT(*) 
+                FROM UniquePersons WITH (NOLOCK)
+                WHERE IsActive = 1 AND LastSeenAt >= @TodayDate;
+
+                MERGE DailyStats AS target
+                USING (SELECT @TodayDate AS [Date]) AS source
+                ON target.[Date] = source.[Date]
+                WHEN MATCHED THEN
+                    UPDATE SET UniquePersonCount = @TodayCount, LastUpdated = @Now
+                WHEN NOT MATCHED THEN
+                    INSERT ([Date], UniquePersonCount, LastUpdated)
+                    VALUES (@TodayDate, @TodayCount, @Now);
+            ", ct);
+
+                _lastDailyStatsUpdate = DateTime.UtcNow;
+                _logger.LogDebug("📊 DailyStats updated");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "DailyStats update failed (non-critical)");
+            }
         }
 
         private async Task CleanupOldRecords(CancellationToken ct)

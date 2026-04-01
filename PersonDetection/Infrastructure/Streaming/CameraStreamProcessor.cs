@@ -1346,8 +1346,9 @@ namespace PersonDetection.Infrastructure.Streaming
             var saveInterval = TimeSpan.FromSeconds(_persistenceSettings.SaveIntervalSeconds);
 
             // ✅ NEW: Add random jitter so cameras don't all save at the same time
-            var jitter = TimeSpan.FromMilliseconds(new Random(_cameraId).Next(0, 1000));
-            await Task.Delay(jitter, ct);
+            // CameraStreamProcessor.cs — Better jitter spread
+            var jitter = TimeSpan.FromMilliseconds(
+                new Random(_cameraId).Next(0, (int)(saveInterval.TotalMilliseconds * 0.8))); await Task.Delay(jitter, ct);
 
             _logger.LogDebug("💾 Database save loop started for camera {Id}", _cameraId);
 
