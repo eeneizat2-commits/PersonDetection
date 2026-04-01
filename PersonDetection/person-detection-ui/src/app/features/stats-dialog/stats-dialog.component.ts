@@ -1,3 +1,4 @@
+// features/stats-dialog/stats-dialog.component.ts
 import { Component, OnInit, OnDestroy, Inject, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -11,7 +12,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { StatsService, HistoricalStats } from '../../services/stats.service';
-import { Subject, takeUntil } from 'rxjs';
+import { Subject, Subscription, takeUntil } from 'rxjs';
 
 @Component({
   selector: 'app-stats-dialog',
@@ -38,14 +39,17 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   error: string | null = null;
 
   selectedPeriod: string = '3';
-
-  // Combined datetime strings for input type="datetime-local"
   customStartDateTime: string = '';
   customEndDateTime: string = '';
 
-  displayedColumns: string[] = ['date', 'dayName', 'uniquePersons', 'totalDetections', 'peakHour'];
+  displayedColumns: string[] = [
+    'date', 'dayName', 'uniquePersons', 'totalDetections', 'peakHour'
+  ];
 
   private destroy$ = new Subject<void>();
+
+  // ✅ FIX: Track the current in-flight request so we can cancel it
+  private currentRequest?: Subscription;
 
   constructor(
     private statsService: StatsService,
@@ -53,7 +57,6 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     public dialogRef: MatDialogRef<StatsDialogComponent>,
     @Inject(MAT_DIALOG_DATA) public data: { cameraId?: number }
   ) {
-    // Set default datetime values
     this.setDefaultDateTimeRange();
   }
 
@@ -62,29 +65,34 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    // ✅ FIX: Cancel any in-flight request when dialog closes
+    this.cancelCurrentRequest();
     this.destroy$.next();
     this.destroy$.complete();
   }
 
-  /**
-   * Set default datetime range (today start to end)
-   */
+  // ══════════════════════════════════════════════════════════════
+  // ✅ FIX: Cancel the previous HTTP request before starting a new one
+  // ══════════════════════════════════════════════════════════════
+  private cancelCurrentRequest(): void {
+    if (this.currentRequest && !this.currentRequest.closed) {
+      this.currentRequest.unsubscribe(); // This aborts the HTTP request
+      // When Angular's HttpClient subscription is unsubscribed,
+      // the browser aborts the XMLHttpRequest, which triggers
+      // CancellationToken on the ASP.NET Core server
+    }
+  }
+
   private setDefaultDateTimeRange(): void {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    // Start: today at 00:00
     this.customStartDateTime = this.toDateTimeLocalString(today);
 
-    // End: today at 23:59
     const endOfDay = new Date(today);
     endOfDay.setHours(23, 59, 0, 0);
     this.customEndDateTime = this.toDateTimeLocalString(endOfDay);
   }
 
-  /**
-   * Convert Date to datetime-local input format (YYYY-MM-DDTHH:mm)
-   */
   private toDateTimeLocalString(date: Date): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -94,15 +102,15 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     return `${year}-${month}-${day}T${hours}:${minutes}`;
   }
 
-  /**
-   * Parse datetime-local string to Date object
-   */
   private parseDateTimeLocal(dateTimeStr: string): Date | null {
     if (!dateTimeStr) return null;
     return new Date(dateTimeStr);
   }
 
   loadStats(): void {
+    // ✅ FIX: Cancel any previous request first
+    this.cancelCurrentRequest();
+
     this.loading = true;
     this.error = null;
     this.cdr.markForCheck();
@@ -126,42 +134,49 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
       }
     } else {
       const days = parseInt(this.selectedPeriod, 10);
-      observable = this.statsService.getHistoricalStats(days, undefined, undefined, this.data?.cameraId);
+      observable = this.statsService.getHistoricalStats(
+        days, undefined, undefined, this.data?.cameraId
+      );
     }
 
-    observable.pipe(takeUntil(this.destroy$)).subscribe({
-      next: (stats) => {
-        this.stats = stats;
-        this.loading = false;
-        this.cdr.markForCheck();
-      },
-      error: (err) => {
-        this.error = 'Failed to load statistics';
-        this.loading = false;
-        this.cdr.markForCheck();
-        console.error(err);
-      }
-    });
+    // ✅ FIX: Store the subscription so we can cancel it later
+    this.currentRequest = observable
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (stats) => {
+          this.stats = stats;
+          this.loading = false;
+          this.cdr.markForCheck();
+        },
+        error: (err) => {
+          // ✅ FIX: Don't show error for cancelled requests
+          if (err.name === 'AbortError' || err.status === 0) {
+            // Request was cancelled — ignore silently
+            console.debug('Stats request was cancelled');
+            return;
+          }
+          this.error = 'Failed to load statistics';
+          this.loading = false;
+          this.cdr.markForCheck();
+          console.error(err);
+        }
+      });
   }
 
   onPeriodChange(): void {
     if (this.selectedPeriod !== 'custom') {
-      this.loadStats();
+      this.loadStats(); // ← Will cancel the previous request automatically now
     } else {
-      // Reset to default when switching to custom
+      this.cancelCurrentRequest(); // Cancel any running request
+      this.loading = false;
       this.setDefaultDateTimeRange();
     }
   }
 
-  /**
- * Open the native datetime picker
- */
   openPicker(input: HTMLInputElement): void {
-    // Modern browsers support showPicker()
     if (typeof input.showPicker === 'function') {
       input.showPicker();
     } else {
-      // Fallback for older browsers - focus and click
       input.focus();
       input.click();
     }
@@ -169,12 +184,11 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
 
   applyCustomRange(): void {
     if (this.customStartDateTime && this.customEndDateTime) {
-      // Validate that end is after start
       const start = this.parseDateTimeLocal(this.customStartDateTime);
       const end = this.parseDateTimeLocal(this.customEndDateTime);
 
       if (start && end && end > start) {
-        this.loadStats();
+        this.loadStats(); // ← Will cancel the previous request automatically now
       } else {
         this.error = 'End date must be after start date';
       }

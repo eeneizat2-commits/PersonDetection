@@ -1082,26 +1082,23 @@ namespace PersonDetection.Infrastructure.Identity
         {
             try
             {
-                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;Trusted_Connection=True;TrustServerCertificate=True;Connection Timeout=5;Command Timeout=10;Max Pool Size=2;Min Pool Size=0;Pooling=true;Application Name=TodayCount;";
+                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;Trusted_Connection=True;TrustServerCertificate=True;Connection Timeout=7;Command Timeout=7;Max Pool Size=4;Min Pool Size=0;Pooling=true;Application Name=TodayCount;";
 
                 using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
                 await connection.OpenAsync();
 
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
-            SELECT COUNT_BIG(*) 
-            FROM [UniquePersons] WITH (NOLOCK, READUNCOMMITTED) 
-            WHERE [IsActive] = 1 
-              AND [LastSeenAt] >= @todayStart";
-                command.CommandTimeout = 5;
-
-                var param = command.CreateParameter();
-                param.ParameterName = "@todayStart";
-                param.Value = DateTime.UtcNow.Date;
-                command.Parameters.Add(param);
+            SELECT UniquePersonCount 
+            FROM DailyStats WITH (NOLOCK) 
+            WHERE [Date] = CAST(SYSUTCDATETIME() AS DATE)";
+                command.CommandTimeout = 4;
 
                 var result = await command.ExecuteScalarAsync();
-                _cachedTodayCount = Convert.ToInt32(result);
+                if (result != null && result != DBNull.Value)
+                {
+                    _cachedTodayCount = Convert.ToInt32(result);
+                }
                 _lastTodayCountUpdate = DateTime.UtcNow;
             }
             catch (Exception ex)
@@ -1116,7 +1113,8 @@ namespace PersonDetection.Infrastructure.Identity
                         {
                             lock (i.SyncLock)
                             {
-                                return i.FirstSeen >= todayStart || i.LastSeen >= todayStart;
+                                return _confirmedPersons.ContainsKey(i.GlobalPersonId) &&
+                                       (i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
                             }
                         });
                 }
