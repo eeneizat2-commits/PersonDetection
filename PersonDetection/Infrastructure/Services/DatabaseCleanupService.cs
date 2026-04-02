@@ -6,6 +6,7 @@
     using Microsoft.Extensions.Logging;
     using Microsoft.Extensions.Options;
     using PersonDetection.Application.Configuration;
+    using PersonDetection.Domain.Services;
     using PersonDetection.Infrastructure.Context;
 
     public class DatabaseCleanupService : BackgroundService
@@ -82,32 +83,39 @@
 
             try
             {
+                // ✅ Get the count from PersonIdentityService (already in memory)
+                // instead of querying the 13 GB table
+                var identityMatcher = _serviceProvider.GetService<IPersonIdentityMatcher>();
+                var todayCount = identityMatcher?.GetTodayUniqueCount() ?? 0;
+
+                if (todayCount <= 0)
+                {
+                    _lastDailyStatsUpdate = DateTime.UtcNow;
+                    return;
+                }
+
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-                context.Database.SetCommandTimeout(30);
+                context.Database.SetCommandTimeout(10);
 
+                // Only touch the tiny DailyStats table (10 rows)
                 await context.Database.ExecuteSqlRawAsync(@"
-                DECLARE @Now DATETIME2 = SYSUTCDATETIME();
-                DECLARE @TodayDate DATE = CAST(@Now AS DATE);
-                DECLARE @TodayCount INT;
+            DECLARE @Now DATETIME2 = SYSUTCDATETIME();
+            DECLARE @TodayDate DATE = CAST(@Now AS DATE);
 
-                SELECT @TodayCount = COUNT(*) 
-                FROM UniquePersons WITH (NOLOCK)
-                WHERE IsActive = 1 AND LastSeenAt >= @TodayDate;
-
-                MERGE DailyStats AS target
-                USING (SELECT @TodayDate AS [Date]) AS source
-                ON target.[Date] = source.[Date]
-                WHEN MATCHED THEN
-                    UPDATE SET UniquePersonCount = @TodayCount, LastUpdated = @Now
-                WHEN NOT MATCHED THEN
-                    INSERT ([Date], UniquePersonCount, LastUpdated)
-                    VALUES (@TodayDate, @TodayCount, @Now);
-            ", ct);
+            IF EXISTS (SELECT 1 FROM DailyStats WHERE [Date] = @TodayDate)
+                UPDATE DailyStats 
+                SET UniquePersonCount = {0}, LastUpdated = @Now
+                WHERE [Date] = @TodayDate;
+            ELSE
+                INSERT INTO DailyStats ([Date], UniquePersonCount, LastUpdated)
+                VALUES (@TodayDate, {0}, @Now);
+        ", todayCount);
 
                 _lastDailyStatsUpdate = DateTime.UtcNow;
-                _logger.LogDebug("📊 DailyStats updated");
+                _logger.LogDebug("📊 DailyStats updated: {Count}", todayCount);
             }
+            catch (OperationCanceledException) { /* ignore */ }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "DailyStats update failed (non-critical)");

@@ -643,6 +643,7 @@ namespace PersonDetection.Infrastructure.Identity
                 identity.IsConfirmedByConfidence = true;
                 _pendingSave[newId] = true;
                 Interlocked.Increment(ref _totalConfirmedEver);
+                Interlocked.Increment(ref _todayConfirmedCount);
                 _logger.LogInformation(
                     "🆕✅ {Reason} [{ConfirmType}]: {Id} cam={Cam} conf={Conf:P0} (total={Total})",
                     reason, confirmType, newId.ToString()[..8], cameraId, confidence, _totalConfirmedEver);
@@ -705,6 +706,7 @@ namespace PersonDetection.Infrastructure.Identity
             {
                 _confirmedPersons[personId] = true;
                 Interlocked.Increment(ref _totalConfirmedEver); // 🆕 ADD
+                Interlocked.Increment(ref _todayConfirmedCount);
                 _logger.LogInformation("✅ CONFIRMED on match: {Id}", personId.ToString()[..8]);
             }
         }
@@ -1034,17 +1036,33 @@ namespace PersonDetection.Infrastructure.Identity
         // ✅ NEW — non-blocking async refresh
         private int _cachedTodayCount = 0;
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
+        private DateTime _todayDate = DateTime.UtcNow.Date;
         private volatile bool _isRefreshingTodayCount = false;
-
+        private int _todayConfirmedCount = 0;
+        private DateTime _todayCounterDate = DateTime.UtcNow.Date;
         public int GetTodayUniqueCount()
         {
-            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 30
+            var today = DateTime.UtcNow.Date;
+
+            // Reset counter at midnight
+            if (today != _todayCounterDate)
+            {
+                _todayCounterDate = today;
+                _todayConfirmedCount = 0;
+                _cachedTodayCount = 0;
+                _lastTodayCountUpdate = DateTime.MinValue;
+            }
+
+            // Refresh from DB every 60 seconds
+            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 60
                 && !_isRefreshingTodayCount)
             {
                 _isRefreshingTodayCount = true;
                 _ = RefreshTodayCountAsync();
             }
-            return _cachedTodayCount;
+
+            // Return whichever is higher — DB count or in-memory counter
+            return Math.Max(_cachedTodayCount, _todayConfirmedCount);
         }
 
         private float[]? ParseFeatureVector(string? featureData)
@@ -1082,44 +1100,48 @@ namespace PersonDetection.Infrastructure.Identity
         {
             try
             {
-                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;Trusted_Connection=True;TrustServerCertificate=True;Connection Timeout=7;Command Timeout=7;Max Pool Size=4;Min Pool Size=0;Pooling=true;Application Name=TodayCount;";
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
 
-                using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                await connection.OpenAsync();
+                var conn = context.Database.GetDbConnection();
+                if (conn.State != System.Data.ConnectionState.Open)
+                    await conn.OpenAsync();
 
-                using var command = connection.CreateCommand();
-                command.CommandText = @"
-            SELECT UniquePersonCount 
-            FROM DailyStats WITH (NOLOCK) 
-            WHERE [Date] = CAST(SYSUTCDATETIME() AS DATE)";
-                command.CommandTimeout = 4;
+                using var cmd = conn.CreateCommand();
+                // ✅ Fast: count only from DetectionResults (small table, 14K rows)
+                // instead of UniquePersons (282K rows, 13 GB)
+                cmd.CommandText = @"
+            SELECT ISNULL(MAX(UniquePersonCount), 0)
+            FROM DetectionResults WITH (NOLOCK)
+            WHERE CameraId = (
+                SELECT TOP 1 CameraId 
+                FROM DetectionResults WITH (NOLOCK)
+                WHERE Timestamp >= @todayStart
+                ORDER BY Timestamp DESC
+            )
+            AND Timestamp >= @todayStart";
+                cmd.CommandTimeout = 5;
 
-                var result = await command.ExecuteScalarAsync();
-                if (result != null && result != DBNull.Value)
+                var param = cmd.CreateParameter();
+                param.ParameterName = "@todayStart";
+                param.Value = DateTime.UtcNow.Date;
+                cmd.Parameters.Add(param);
+
+                var result = await cmd.ExecuteScalarAsync();
+                var dbCount = Convert.ToInt32(result);
+
+                // Only update if DB returned a meaningful number
+                if (dbCount > 0)
                 {
-                    _cachedTodayCount = Convert.ToInt32(result);
+                    _cachedTodayCount = Math.Max(_cachedTodayCount, dbCount);
                 }
+
                 _lastTodayCountUpdate = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning("⚠️ RefreshTodayCount failed: {Msg}", ex.Message);
-
-                if (_cachedTodayCount == 0)
-                {
-                    var todayStart = DateTime.UtcNow.Date;
-                    _cachedTodayCount = _globalIdentities.Values
-                        .Count(i =>
-                        {
-                            lock (i.SyncLock)
-                            {
-                                return _confirmedPersons.ContainsKey(i.GlobalPersonId) &&
-                                       (i.FirstSeen >= todayStart || i.LastSeen >= todayStart);
-                            }
-                        });
-                }
-
-                _lastTodayCountUpdate = DateTime.UtcNow;
+                _logger.LogDebug("⚠️ RefreshTodayCount failed: {Msg}", ex.Message);
+                // Don't update timestamp — will retry sooner
             }
             finally
             {
