@@ -78,13 +78,12 @@
         // Runs ONCE every 60 seconds instead of 10 times every 10 seconds
         private async Task UpdateDailyStatsIfNeeded(CancellationToken ct)
         {
-            if ((DateTime.UtcNow - _lastDailyStatsUpdate).TotalSeconds < 60)
+            if ((DateTime.UtcNow - _lastDailyStatsUpdate).TotalSeconds < 120)
                 return;
 
             try
             {
-                // ✅ Get the count from PersonIdentityService (already in memory)
-                // instead of querying the 13 GB table
+                // ✅ Get count from PersonIdentityService (already in memory)
                 var identityMatcher = _serviceProvider.GetService<IPersonIdentityMatcher>();
                 var todayCount = identityMatcher?.GetTodayUniqueCount() ?? 0;
 
@@ -94,23 +93,32 @@
                     return;
                 }
 
-                using var scope = _serviceProvider.CreateScope();
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-                context.Database.SetCommandTimeout(10);
+                // ✅ Only touch DailyStats table (10 rows — instant)
+                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;Trusted_Connection=True;TrustServerCertificate=True;Connection Timeout=5;Command Timeout=5;Pooling=true;Max Pool Size=2;Application Name=DailyStats;";
 
-                // Only touch the tiny DailyStats table (10 rows)
-                await context.Database.ExecuteSqlRawAsync(@"
+                using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                await connection.OpenAsync(ct);
+
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = @"
             DECLARE @Now DATETIME2 = SYSUTCDATETIME();
             DECLARE @TodayDate DATE = CAST(@Now AS DATE);
 
             IF EXISTS (SELECT 1 FROM DailyStats WHERE [Date] = @TodayDate)
                 UPDATE DailyStats 
-                SET UniquePersonCount = {0}, LastUpdated = @Now
+                SET UniquePersonCount = @Count, LastUpdated = @Now
                 WHERE [Date] = @TodayDate;
             ELSE
                 INSERT INTO DailyStats ([Date], UniquePersonCount, LastUpdated)
-                VALUES (@TodayDate, {0}, @Now);
-        ", todayCount);
+                VALUES (@TodayDate, @Count, @Now);";
+                cmd.CommandTimeout = 5;
+
+                var param = cmd.CreateParameter();
+                param.ParameterName = "@Count";
+                param.Value = todayCount;
+                cmd.Parameters.Add(param);
+
+                await cmd.ExecuteNonQueryAsync(ct);
 
                 _lastDailyStatsUpdate = DateTime.UtcNow;
                 _logger.LogDebug("📊 DailyStats updated: {Count}", todayCount);
