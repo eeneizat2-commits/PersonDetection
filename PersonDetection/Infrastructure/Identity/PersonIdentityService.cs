@@ -36,6 +36,8 @@ namespace PersonDetection.Infrastructure.Identity
 
         private int _totalConfirmedEver = 0;
 
+        private DateTime _lastFlush = DateTime.MinValue;
+
         #region Inner Classes
 
         private class PersonIdentity
@@ -1167,10 +1169,10 @@ namespace PersonDetection.Infrastructure.Identity
         // ✅ NEW — non-blocking async refresh
         private int _cachedTodayCount = 0;
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
-        private DateTime _todayCounterDate = DateTime.UtcNow.Date;
         private volatile bool _isRefreshingTodayCount = false;
         private int _todayConfirmedCount = 0;
-        private int _startupConfirmedCount = 0;  // ✅ NEW
+        private int _startupConfirmedCount = 0;  
+        private DateTime _todayCounterDate = DateTime.UtcNow.Date;
         public int GetTodayUniqueCount()
         {
             var today = DateTime.UtcNow.Date;
