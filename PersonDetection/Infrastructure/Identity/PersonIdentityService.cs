@@ -9,6 +9,7 @@ namespace PersonDetection.Infrastructure.Identity
     using PersonDetection.Domain.Services;
     using PersonDetection.Domain.ValueObjects;
     using PersonDetection.Infrastructure.Context;
+    using PersonDetection.Infrastructure.Services;
     using System.Collections.Concurrent;
     using System.Runtime.CompilerServices;
 
@@ -159,33 +160,60 @@ namespace PersonDetection.Infrastructure.Identity
 
         private async Task InitializeFromDatabaseAsync()
         {
-            await _initLock.WaitAsync();                    // 1. ✅ SAME — Lock
+            await _initLock.WaitAsync();
             try
             {
-                if (_isInitialized) return;                 // 2. ✅ SAME — Skip if done
+                if (_isInitialized) return;
 
-                // 3. ✅ SAME — Log start
                 _logger.LogInformation(
                     "📥 Loading identities from last {Hours} hours (max {Max})...",
                     _settings.DatabaseLoadHours,
                     _settings.MaxIdentitiesInMemory);
 
-                // 4. ✅ SAME — Create DB scope
+                // ✅ FIX: Get today's count FIRST, before any EF Core queries
+                try
+                {
+                    using var countConn = new Microsoft.Data.SqlClient.SqlConnection(
+                        "Server=DESKTOP-QML0799;Database=DetectionContext;" +
+                        "Trusted_Connection=True;TrustServerCertificate=True;" +
+                        "Connection Timeout=30;Command Timeout=30;Pooling=false;");
+                    await countConn.OpenAsync();
+
+                    using var countCmd = countConn.CreateCommand();
+                    countCmd.CommandText = @"
+        SELECT COUNT(*)
+        FROM UniquePersons WITH (NOLOCK)
+        WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)";
+                    countCmd.CommandTimeout = 40;
+
+                    var countResult = await countCmd.ExecuteScalarAsync();
+                    var todayCount = Convert.ToInt32(countResult ?? 0);
+
+                    _todayConfirmedCount = todayCount;
+                    _cachedTodayCount = todayCount;
+                    _startupConfirmedCount = todayCount;
+                    _todayCounterDate = DateTime.UtcNow.Date;
+                    _lastTodayCountUpdate = DateTime.UtcNow;
+
+                    _logger.LogWarning("📊 Today count from DB: {Today}", todayCount);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("📊 Today count failed, starting from 0: {Err}", ex.Message);
+                }
+
+                // Now load identities (existing code below)
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-
-                // ✅ NEW: Set explicit timeout (fixes the timeout crash)
                 context.Database.SetCommandTimeout(TimeSpan.FromSeconds(180));
 
-                // 5. ✅ SAME — Calculate cutoff
                 var cutoff = DateTime.UtcNow.AddHours(-_settings.DatabaseLoadHours);
-
-                // 6. ✅ NEW: Load in BATCHES instead of one big query
                 var batchSize = 200;
                 var loaded = 0;
                 var skip = 0;
                 var maxToLoad = _settings.MaxIdentitiesInMemory;
 
+                // ... rest of batch loading stays exactly the same ...
                 while (loaded < maxToLoad)
                 {
                     var currentBatchSize = Math.Min(batchSize, maxToLoad - loaded);
@@ -262,21 +290,22 @@ namespace PersonDetection.Infrastructure.Identity
                     if (batch.Count < currentBatchSize) break;  // ✅ NEW: stop when no more data
                 }
 
-                // 10. ✅ SAME — Mark initialized
                 _totalConfirmedEver = _confirmedPersons.Count;
                 _isInitialized = true;
+
+                // ✅ REMOVED: No more today count query at the end
+
                 _logger.LogWarning("✅ Loaded {Count} identities from database (scanned {Scanned})",
                     loaded, skip);
             }
             catch (Exception ex)
             {
-                // 11. ✅ SAME — Error handling
                 _logger.LogError(ex, "❌ Failed to load from database");
                 _isInitialized = true;
             }
             finally
             {
-                _initLock.Release();                        // 12. ✅ SAME — Release lock
+                _initLock.Release();
             }
         }
 
@@ -1138,23 +1167,19 @@ namespace PersonDetection.Infrastructure.Identity
         // ✅ NEW — non-blocking async refresh
         private int _cachedTodayCount = 0;
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
+        private DateTime _todayCounterDate = DateTime.UtcNow.Date;
         private volatile bool _isRefreshingTodayCount = false;
         private int _todayConfirmedCount = 0;
-        private int _startupConfirmedCount = 0;  
-        private DateTime _todayCounterDate = DateTime.UtcNow.Date;
+        private int _startupConfirmedCount = 0;  // ✅ NEW
         public int GetTodayUniqueCount()
         {
             var today = DateTime.UtcNow.Date;
 
             if (today != _todayCounterDate)
             {
-                // ✅ NEW: Flush before resetting
-                _ = FlushUnsavedToDatabaseAsync();
-
                 _todayCounterDate = today;
                 _todayConfirmedCount = 0;
                 _cachedTodayCount = 0;
-                _startupConfirmedCount = 0;
                 _lastTodayCountUpdate = DateTime.MinValue;
             }
 
@@ -1165,6 +1190,9 @@ namespace PersonDetection.Infrastructure.Identity
                 _ = RefreshTodayCountAsync();
             }
 
+            // ✅ FIX: _cachedTodayCount = DB count at startup (e.g., 3067)
+            // _todayConfirmedCount = new persons since startup (e.g., 50)
+            // Total = startup DB count + new persons since startup
             return _cachedTodayCount + (_todayConfirmedCount - _startupConfirmedCount);
         }
 
@@ -1203,48 +1231,39 @@ namespace PersonDetection.Infrastructure.Identity
         {
             try
             {
-                using var scope = _serviceProvider.CreateScope();
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
+                    "Trusted_Connection=True;TrustServerCertificate=True;" +
+                    "Connection Timeout=3;Command Timeout=3;" +
+                    "Pooling=true;Max Pool Size=2;Min Pool Size=0;" +
+                    "Application Name=TodayCount;";
 
-                var conn = context.Database.GetDbConnection();
-                if (conn.State != System.Data.ConnectionState.Open)
-                    await conn.OpenAsync();
+                using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await connection.OpenAsync(cts.Token);
 
-                using var cmd = conn.CreateCommand();
-                // ✅ Fast: count only from DetectionResults (small table, 14K rows)
-                // instead of UniquePersons (282K rows, 13 GB)
+                using var cmd = connection.CreateCommand();
                 cmd.CommandText = @"
-            SELECT ISNULL(MAX(UniquePersonCount), 0)
-            FROM DetectionResults WITH (NOLOCK)
-            WHERE CameraId = (
-                SELECT TOP 1 CameraId 
-                FROM DetectionResults WITH (NOLOCK)
-                WHERE Timestamp >= @todayStart
-                ORDER BY Timestamp DESC
-            )
-            AND Timestamp >= @todayStart";
-                cmd.CommandTimeout = 5;
+            SELECT COUNT(*)
+            FROM UniquePersons WITH (NOLOCK, READUNCOMMITTED)
+            WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)";
+                cmd.CommandTimeout = 3;
 
-                var param = cmd.CreateParameter();
-                param.ParameterName = "@todayStart";
-                param.Value = DateTime.UtcNow.Date;
-                cmd.Parameters.Add(param);
+                var result = await cmd.ExecuteScalarAsync(cts.Token);
+                var dbCount = Convert.ToInt32(result ?? 0);
 
-                var result = await cmd.ExecuteScalarAsync();
-                var dbCount = Convert.ToInt32(result);
-
-                // Only update if DB returned a meaningful number
                 if (dbCount > 0)
                 {
-                    _cachedTodayCount = Math.Max(_cachedTodayCount, dbCount);
+                    // ✅ Reset baseline to DB count
+                    _cachedTodayCount = dbCount;
+                    _startupConfirmedCount = _todayConfirmedCount;
                 }
 
                 _lastTodayCountUpdate = DateTime.UtcNow;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                _logger.LogDebug("⚠️ RefreshTodayCount failed: {Msg}", ex.Message);
-                // Don't update timestamp — will retry sooner
+                // Silent fail — formula keeps counting from last known DB count
+                _lastTodayCountUpdate = DateTime.UtcNow.AddSeconds(60);
             }
             finally
             {
