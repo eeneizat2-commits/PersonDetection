@@ -215,6 +215,7 @@ builder.Services.AddSingleton<DatabaseCleanupService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DatabaseCleanupService>()); 
 builder.Services.AddSingleton<CameraHealthCheckService>();                    // ✅ ADD
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CameraHealthCheckService>());  // ✅ ADD
+
 // ============================================
 // RESPONSE COMPRESSION
 // ============================================
@@ -283,5 +284,20 @@ if (app.Environment.IsDevelopment())
     var db = scope.ServiceProvider.GetRequiredService<DetectionContext>();
     db.Database.EnsureCreated();
 }
+
+var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+lifetime.ApplicationStopping.Register(() =>
+{
+    try
+    {
+        var matcher = app.Services.GetService<IPersonIdentityMatcher>();
+        matcher?.FlushUnsavedToDatabaseAsync().GetAwaiter().GetResult();
+    }
+    catch (Exception ex)
+    {
+        var logger = app.Services.GetService<ILogger<Program>>();
+        logger?.LogWarning(ex, "Failed to flush unsaved persons on shutdown");
+    }
+});
 
 app.Run();

@@ -436,8 +436,6 @@ namespace PersonDetection.Infrastructure.Identity
 
         #region Matching Logic
 
-        // ❌ FIND the entire TryMatchWithAmbiguousZone method
-        // 🆕 REPLACE WITH:
 
         private (MatchType MatchType, Guid PersonId, float BestDistance)
             TryMatchWithAmbiguousZone(
@@ -808,6 +806,110 @@ namespace PersonDetection.Infrastructure.Identity
 
             return unsaved;
         }
+
+
+        /// <summary>
+        /// Force save all confirmed but unsaved persons to database.
+        /// Call this before midnight reset or app shutdown.
+        /// </summary>
+        public async Task FlushUnsavedToDatabaseAsync()
+        {
+            try
+            {
+                var unsaved = new List<(Guid GlobalPersonId, float[] Features, int CameraId, DateTime FirstSeen)>();
+
+                foreach (var kvp in _confirmedPersons)
+                {
+                    if (_globalIdentities.TryGetValue(kvp.Key, out var identity))
+                    {
+                        lock (identity.SyncLock)
+                        {
+                            if (identity.DbId == 0 && identity.FeatureVector != null)
+                            {
+                                unsaved.Add((
+                                    identity.GlobalPersonId,
+                                    (float[])identity.FeatureVector.Clone(),
+                                    identity.LastCameraId,
+                                    identity.FirstSeen
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                if (unsaved.Count == 0)
+                {
+                    _logger.LogDebug("💾 No unsaved persons to flush");
+                    return;
+                }
+
+                _logger.LogWarning("💾 Flushing {Count} unsaved persons to database...", unsaved.Count);
+
+                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
+                    "Trusted_Connection=True;TrustServerCertificate=True;" +
+                    "Connection Timeout=30;Command Timeout=60;Pooling=false;";
+
+                using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                await conn.OpenAsync();
+
+                int saved = 0;
+                int failed = 0;
+
+                // Save in small batches
+                foreach (var batch in unsaved.Chunk(50))
+                {
+                    foreach (var person in batch)
+                    {
+                        try
+                        {
+                            var featureStr = string.Join(",", person.Features);
+
+                            using var cmd = conn.CreateCommand();
+                            cmd.CommandText = @"
+                        IF NOT EXISTS (
+                            SELECT 1 FROM UniquePersons WITH (NOLOCK) 
+                            WHERE GlobalPersonId = @GlobalId
+                        )
+                        BEGIN
+                            INSERT INTO UniquePersons 
+                                (GlobalPersonId, FirstSeenAt, LastSeenAt, 
+                                 FirstSeenCameraId, LastSeenCameraId, 
+                                 TotalSightings, FeatureVector, IsActive)
+                            VALUES 
+                                (@GlobalId, @FirstSeen, @FirstSeen, 
+                                 @CameraId, @CameraId, 
+                                 1, @Features, 1);
+                        END";
+                            cmd.CommandTimeout = 10;
+
+                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@GlobalId", person.GlobalPersonId));
+                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@FirstSeen", person.FirstSeen));
+                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", person.CameraId));
+                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Features", featureStr));
+
+                            await cmd.ExecuteNonQueryAsync();
+                            saved++;
+                        }
+                        catch (Exception ex)
+                        {
+                            failed++;
+                            _logger.LogDebug("💾 Flush failed for {Id}: {Err}",
+                                person.GlobalPersonId.ToString()[..8], ex.Message);
+                        }
+                    }
+
+                    // Small delay between batches
+                    await Task.Delay(100);
+                }
+
+                _logger.LogWarning("💾 Flush complete: {Saved} saved, {Failed} failed out of {Total}",
+                    saved, failed, unsaved.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "💾 Flush failed");
+            }
+        }
         #endregion
 
         #region Public Query Methods
@@ -1036,33 +1138,34 @@ namespace PersonDetection.Infrastructure.Identity
         // ✅ NEW — non-blocking async refresh
         private int _cachedTodayCount = 0;
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
-        private DateTime _todayDate = DateTime.UtcNow.Date;
         private volatile bool _isRefreshingTodayCount = false;
         private int _todayConfirmedCount = 0;
+        private int _startupConfirmedCount = 0;  
         private DateTime _todayCounterDate = DateTime.UtcNow.Date;
         public int GetTodayUniqueCount()
         {
             var today = DateTime.UtcNow.Date;
 
-            // Reset counter at midnight
             if (today != _todayCounterDate)
             {
+                // ✅ NEW: Flush before resetting
+                _ = FlushUnsavedToDatabaseAsync();
+
                 _todayCounterDate = today;
                 _todayConfirmedCount = 0;
                 _cachedTodayCount = 0;
+                _startupConfirmedCount = 0;
                 _lastTodayCountUpdate = DateTime.MinValue;
             }
 
-            // Refresh from DB every 60 seconds
-            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 60
+            if ((DateTime.UtcNow - _lastTodayCountUpdate).TotalSeconds > 120
                 && !_isRefreshingTodayCount)
             {
                 _isRefreshingTodayCount = true;
                 _ = RefreshTodayCountAsync();
             }
 
-            // Return whichever is higher — DB count or in-memory counter
-            return Math.Max(_cachedTodayCount, _todayConfirmedCount);
+            return _cachedTodayCount + (_todayConfirmedCount - _startupConfirmedCount);
         }
 
         private float[]? ParseFeatureVector(string? featureData)

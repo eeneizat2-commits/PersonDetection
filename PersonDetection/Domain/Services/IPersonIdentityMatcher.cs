@@ -37,6 +37,7 @@ namespace PersonDetection.Domain.Services
         void ClearAllIdentities();
         void ClearCameraIdentities(int cameraId);
         void StartNewSession();
+        Task FlushUnsavedToDatabaseAsync();
 
         Dictionary<string, object> GetStatistics();
     }

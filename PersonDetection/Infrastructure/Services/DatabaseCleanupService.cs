@@ -21,6 +21,7 @@
 
         private DateTime _lastDailyStatsUpdate = DateTime.MinValue;
         private DateTime _lastCleanupRun = DateTime.MinValue;
+        private DateTime _lastFlush = DateTime.MinValue;
 
         public DatabaseCleanupService(
             IServiceProvider serviceProvider,
@@ -42,6 +43,8 @@
                 {
                     // ✅ NEW: Update DailyStats every 60 seconds (lightweight, no locks on other tables)
                     await UpdateDailyStatsIfNeeded(stoppingToken);
+
+                    await FlushUnsavedPersonsIfNeeded(stoppingToken);
 
                     // Short sleep — DailyStats check runs frequently, cleanup runs on interval
                     await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
@@ -122,6 +125,25 @@
             }
         }
 
+        private async Task FlushUnsavedPersonsIfNeeded(CancellationToken ct)
+        {
+            if ((DateTime.UtcNow - _lastFlush).TotalMinutes < 5)
+                return;
+
+            try
+            {
+                var matcher = _serviceProvider.GetService<IPersonIdentityMatcher>();
+                if (matcher != null)
+                {
+                    await matcher.FlushUnsavedToDatabaseAsync();
+                    _lastFlush = DateTime.UtcNow;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Flush failed (non-critical)");
+            }
+        }
         private async Task CleanupOldRecords(CancellationToken ct)
         {
             using var scope = _serviceProvider.CreateScope();
