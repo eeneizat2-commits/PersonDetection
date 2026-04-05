@@ -135,7 +135,8 @@
 
         private async Task FlushUnsavedPersonsIfNeeded(CancellationToken ct)
         {
-            if ((DateTime.UtcNow - _lastFlush).TotalMinutes < 5)
+            // ✅ Every 2 minutes, flush max 200 persons
+            if ((DateTime.UtcNow - _lastFlush).TotalMinutes < 2)
                 return;
 
             try
@@ -143,7 +144,7 @@
                 var matcher = _serviceProvider.GetService<IPersonIdentityMatcher>();
                 if (matcher != null)
                 {
-                    await matcher.FlushUnsavedToDatabaseAsync();
+                    await matcher.FlushUnsavedToDatabaseAsync(200);
                     _lastFlush = DateTime.UtcNow;
                 }
             }

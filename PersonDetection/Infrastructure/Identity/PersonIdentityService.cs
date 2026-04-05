@@ -840,10 +840,11 @@ namespace PersonDetection.Infrastructure.Identity
 
 
         /// <summary>
-        /// Force save all confirmed but unsaved persons to database.
-        /// Call this before midnight reset or app shutdown.
+        /// Flush unsaved persons in small batches.
+        /// maxToFlush = 0 means flush ALL (used at midnight/shutdown)
+        /// maxToFlush > 0 means flush only that many (used by periodic timer)
         /// </summary>
-        public async Task FlushUnsavedToDatabaseAsync()
+        public async Task FlushUnsavedToDatabaseAsync(int maxToFlush = 0)
         {
             try
             {
@@ -868,73 +869,91 @@ namespace PersonDetection.Infrastructure.Identity
                     }
                 }
 
-                if (unsaved.Count == 0)
+                if (unsaved.Count == 0) return;
+
+                // ✅ Limit batch size for periodic flushes
+                if (maxToFlush > 0 && unsaved.Count > maxToFlush)
                 {
-                    _logger.LogDebug("💾 No unsaved persons to flush");
-                    return;
+                    unsaved = unsaved.Take(maxToFlush).ToList();
                 }
 
-                _logger.LogWarning("💾 Flushing {Count} unsaved persons to database...", unsaved.Count);
+                _logger.LogInformation("💾 Flushing {Count} unsaved persons (total pending: {Total})...",
+                    unsaved.Count, unsaved.Count);
 
                 var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
                     "Trusted_Connection=True;TrustServerCertificate=True;" +
-                    "Connection Timeout=30;Command Timeout=60;Pooling=false;";
-
-                using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                await conn.OpenAsync();
+                    "Connection Timeout=30;Command Timeout=120;Pooling=false;";
 
                 int saved = 0;
                 int failed = 0;
 
-                // Save in small batches
                 foreach (var batch in unsaved.Chunk(50))
                 {
-                    foreach (var person in batch)
+                    try
                     {
-                        try
-                        {
-                            var featureStr = string.Join(",", person.Features);
+                        var personsJson = System.Text.Json.JsonSerializer.Serialize(
+                            batch.Select(p => new
+                            {
+                                GlobalPersonId = p.GlobalPersonId.ToString(),
+                                FeatureVector = string.Join(",", p.Features),
+                                CameraId = p.CameraId,
+                                FirstSeen = p.FirstSeen.ToString("o")
+                            }));
 
-                            using var cmd = conn.CreateCommand();
-                            cmd.CommandText = @"
-                        IF NOT EXISTS (
-                            SELECT 1 FROM UniquePersons WITH (NOLOCK) 
-                            WHERE GlobalPersonId = @GlobalId
-                        )
-                        BEGIN
-                            INSERT INTO UniquePersons 
-                                (GlobalPersonId, FirstSeenAt, LastSeenAt, 
-                                 FirstSeenCameraId, LastSeenCameraId, 
-                                 TotalSightings, FeatureVector, IsActive)
-                            VALUES 
-                                (@GlobalId, @FirstSeen, @FirstSeen, 
-                                 @CameraId, @CameraId, 
-                                 1, @Features, 1);
-                        END";
-                            cmd.CommandTimeout = 10;
+                        using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                        await conn.OpenAsync();
 
-                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@GlobalId", person.GlobalPersonId));
-                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@FirstSeen", person.FirstSeen));
-                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", person.CameraId));
-                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Features", featureStr));
+                        using var cmd = conn.CreateCommand();
+                        cmd.CommandText = @"
+                    SET NOCOUNT ON;
+                    
+                    INSERT INTO UniquePersons WITH (ROWLOCK)
+                        (GlobalPersonId, FirstSeenAt, LastSeenAt, 
+                         FirstSeenCameraId, LastSeenCameraId, 
+                         TotalSightings, FeatureVector, IsActive)
+                    SELECT 
+                        TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER),
+                        TRY_CAST(j.FirstSeen AS DATETIME2),
+                        TRY_CAST(j.FirstSeen AS DATETIME2),
+                        j.CameraId,
+                        j.CameraId,
+                        1,
+                        j.FeatureVector,
+                        1
+                    FROM OPENJSON(@Json) WITH (
+                        GlobalPersonId NVARCHAR(50),
+                        FeatureVector NVARCHAR(MAX),
+                        CameraId INT,
+                        FirstSeen NVARCHAR(50)
+                    ) j
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM UniquePersons up WITH (NOLOCK)
+                        WHERE up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
+                    );
+                    
+                    SELECT @@ROWCOUNT;";
+                        cmd.CommandTimeout = 30;
 
-                            await cmd.ExecuteNonQueryAsync();
-                            saved++;
-                        }
-                        catch (Exception ex)
-                        {
-                            failed++;
-                            _logger.LogDebug("💾 Flush failed for {Id}: {Err}",
-                                person.GlobalPersonId.ToString()[..8], ex.Message);
-                        }
+                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Json", personsJson));
+
+                        var result = await cmd.ExecuteScalarAsync();
+                        saved += Convert.ToInt32(result ?? 0);
+
+                        await Task.Delay(200);
                     }
-
-                    // Small delay between batches
-                    await Task.Delay(100);
+                    catch (Exception ex)
+                    {
+                        failed += batch.Length;
+                        _logger.LogDebug("💾 Batch flush failed: {Err}", ex.Message);
+                        await Task.Delay(500);
+                    }
                 }
 
-                _logger.LogWarning("💾 Flush complete: {Saved} saved, {Failed} failed out of {Total}",
-                    saved, failed, unsaved.Count);
+                if (saved > 0 || failed > 0)
+                {
+                    _logger.LogWarning("💾 Flush complete: {Saved} saved, {Failed} failed",
+                        saved, failed);
+                }
             }
             catch (Exception ex)
             {
@@ -1179,9 +1198,13 @@ namespace PersonDetection.Infrastructure.Identity
 
             if (today != _todayCounterDate)
             {
+                // ✅ Midnight: flush ALL unsaved (maxToFlush = 0)
+                _ = FlushUnsavedToDatabaseAsync(0);
+
                 _todayCounterDate = today;
                 _todayConfirmedCount = 0;
                 _cachedTodayCount = 0;
+                _startupConfirmedCount = 0;
                 _lastTodayCountUpdate = DateTime.MinValue;
             }
 
@@ -1192,9 +1215,6 @@ namespace PersonDetection.Infrastructure.Identity
                 _ = RefreshTodayCountAsync();
             }
 
-            // ✅ FIX: _cachedTodayCount = DB count at startup (e.g., 3067)
-            // _todayConfirmedCount = new persons since startup (e.g., 50)
-            // Total = startup DB count + new persons since startup
             return _cachedTodayCount + (_todayConfirmedCount - _startupConfirmedCount);
         }
 

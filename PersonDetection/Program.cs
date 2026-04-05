@@ -291,12 +291,13 @@ lifetime.ApplicationStopping.Register(() =>
     try
     {
         var matcher = app.Services.GetService<IPersonIdentityMatcher>();
-        matcher?.FlushUnsavedToDatabaseAsync().GetAwaiter().GetResult();
+        // ✅ Shutdown: flush ALL unsaved (maxToFlush = 0)
+        matcher?.FlushUnsavedToDatabaseAsync(0).GetAwaiter().GetResult();
     }
     catch (Exception ex)
     {
         var logger = app.Services.GetService<ILogger<Program>>();
-        logger?.LogWarning(ex, "Failed to flush unsaved persons on shutdown");
+        logger?.LogWarning(ex, "Failed to flush on shutdown");
     }
 });
 
