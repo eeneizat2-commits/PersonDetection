@@ -19,6 +19,9 @@ namespace PersonDetection.Infrastructure.Context
         public DbSet<UniquePerson> UniquePersons { get; set; } = null!;
         public DbSet<PersonSighting> PersonSightings { get; set; } = null!;
 
+        public DbSet<UniquePersonFeature> UniquePersonFeatures { get; set; }
+
+
         // 👇 ADD THESE NEW DbSets
         public DbSet<VideoJob> VideoJobs { get; set; } = null!;
         public DbSet<VideoPersonTimeline> VideoPersonTimelines { get; set; } = null!;
@@ -142,6 +145,15 @@ namespace PersonDetection.Infrastructure.Context
                     .HasForeignKey(x => x.UniquePersonId)
                     .OnDelete(DeleteBehavior.SetNull);
                 builder.Ignore(x => x.DomainEvents);
+            });
+
+            modelBuilder.Entity<UniquePersonFeature>(entity =>
+            {
+                entity.HasKey(e => e.UniquePersonId);
+                entity.ToTable("UniquePersonFeatures");
+                entity.HasOne(e => e.UniquePerson)
+                      .WithOne()
+                      .HasForeignKey<UniquePersonFeature>(e => e.UniquePersonId);
             });
 
             // Seed default webcam

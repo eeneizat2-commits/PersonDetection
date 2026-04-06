@@ -6,6 +6,7 @@ namespace PersonDetection.Infrastructure.Identity
     using Microsoft.Extensions.Logging;
     using PersonDetection.Application.Configuration;
     using PersonDetection.Application.DTOs;
+    using PersonDetection.Domain.Entities;
     using PersonDetection.Domain.Services;
     using PersonDetection.Domain.ValueObjects;
     using PersonDetection.Infrastructure.Context;
@@ -178,7 +179,7 @@ namespace PersonDetection.Infrastructure.Identity
                     using var countConn = new Microsoft.Data.SqlClient.SqlConnection(
                         "Server=DESKTOP-QML0799;Database=DetectionContext;" +
                         "Trusted_Connection=True;TrustServerCertificate=True;" +
-                        "Connection Timeout=30;Command Timeout=30;Pooling=false;");
+                        "Connection Timeout=30;Command Timeout=40;Pooling=false;");
                     await countConn.OpenAsync();
 
                     using var countCmd = countConn.CreateCommand();
@@ -186,7 +187,7 @@ namespace PersonDetection.Infrastructure.Identity
         SELECT COUNT(*)
         FROM UniquePersons WITH (NOLOCK)
         WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)";
-                    countCmd.CommandTimeout = 40;
+                    countCmd.CommandTimeout = 60;
 
                     var countResult = await countCmd.ExecuteScalarAsync();
                     var todayCount = Convert.ToInt32(countResult ?? 0);
@@ -224,26 +225,29 @@ namespace PersonDetection.Infrastructure.Identity
                     try
                     {
                         // ✅ NEW: Select ONLY needed columns (no ThumbnailData, no Label)
-                        // ✅ SAME: Same Where/OrderBy/Take logic
-                        batch = await context.UniquePersons
-                            .Where(p => p.IsActive && p.LastSeenAt >= cutoff)   // ✅ SAME filter
-                            .OrderByDescending(p => p.LastSeenAt)               // ✅ SAME order
-                            .ThenByDescending(p => p.TotalSightings)            // ✅ SAME order
-                            .Skip(skip)                                         // ✅ NEW: pagination
-                            .Take(currentBatchSize)                             // ✅ SAME: limited
-                            .Select(p => new BatchPersonDto                     // ✅ NEW: lightweight DTO
-                            {
-                                Id = p.Id,                                      // ✅ SAME data
-                                GlobalPersonId = p.GlobalPersonId,              // ✅ SAME data
-                                FeatureVector = p.FeatureVector,                // ✅ SAME data
-                                FirstSeenAt = p.FirstSeenAt,                    // ✅ SAME data
-                                LastSeenAt = p.LastSeenAt,                      // ✅ SAME data
-                                FirstSeenCameraId = p.FirstSeenCameraId,        // ✅ SAME data
-                                LastSeenCameraId = p.LastSeenCameraId,          // ✅ SAME data
-                                TotalSightings = p.TotalSightings               // ✅ SAME data
-                            })
-                            .AsNoTracking()                                     // ✅ NEW: performance
-                            .ToListAsync();
+                        // ✅ NEW — LEFT JOIN with UniquePersonFeatures, fallback to old column
+                        batch = await (from p in context.UniquePersons
+                                       join f in context.UniquePersonFeatures
+                                           on p.Id equals f.UniquePersonId into features
+                                       from f in features.DefaultIfEmpty()     // LEFT JOIN
+                                       where p.IsActive && p.LastSeenAt >= cutoff
+                                       orderby p.LastSeenAt descending, p.TotalSightings descending
+                                       select new BatchPersonDto
+                                       {
+                                           Id = p.Id,
+                                           GlobalPersonId = p.GlobalPersonId,
+                                           // ✅ New table first, fallback to old column (transition period)
+                                           FeatureVector = f != null ? f.FeatureVector : p.FeatureVector,
+                                           FirstSeenAt = p.FirstSeenAt,
+                                           LastSeenAt = p.LastSeenAt,
+                                           FirstSeenCameraId = p.FirstSeenCameraId,
+                                           LastSeenCameraId = p.LastSeenCameraId,
+                                           TotalSightings = p.TotalSightings
+                                       })
+                                      .Skip(skip)
+                                      .Take(currentBatchSize)
+                                      .AsNoTracking()
+                                      .ToListAsync();
                     }
                     catch (Exception ex)
                     {
@@ -871,88 +875,99 @@ namespace PersonDetection.Infrastructure.Identity
 
                 if (unsaved.Count == 0) return;
 
-                // ✅ Limit batch size for periodic flushes
                 if (maxToFlush > 0 && unsaved.Count > maxToFlush)
                 {
                     unsaved = unsaved.Take(maxToFlush).ToList();
                 }
 
-                _logger.LogInformation("💾 Flushing {Count} unsaved persons (total pending: {Total})...",
-                    unsaved.Count, unsaved.Count);
+                _logger.LogInformation("💾 Flushing {Count} unsaved persons...", unsaved.Count);
 
                 var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
                     "Trusted_Connection=True;TrustServerCertificate=True;" +
-                    "Connection Timeout=30;Command Timeout=120;Pooling=false;";
+                    "Connection Timeout=10;Command Timeout=10;Pooling=false;";
 
                 int saved = 0;
                 int failed = 0;
 
-                foreach (var batch in unsaved.Chunk(50))
+                using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                await conn.OpenAsync();
+
+                // ✅ Process ONE person at a time — each uses index lookup = instant
+                foreach (var person in unsaved)
                 {
                     try
                     {
-                        var personsJson = System.Text.Json.JsonSerializer.Serialize(
-                            batch.Select(p => new
-                            {
-                                GlobalPersonId = p.GlobalPersonId.ToString(),
-                                FeatureVector = string.Join(",", p.Features),
-                                CameraId = p.CameraId,
-                                FirstSeen = p.FirstSeen.ToString("o")
-                            }));
-
-                        using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                        await conn.OpenAsync();
-
                         using var cmd = conn.CreateCommand();
                         cmd.CommandText = @"
-                    SET NOCOUNT ON;
-                    
-                    INSERT INTO UniquePersons WITH (ROWLOCK)
-                        (GlobalPersonId, FirstSeenAt, LastSeenAt, 
-                         FirstSeenCameraId, LastSeenCameraId, 
-                         TotalSightings, FeatureVector, IsActive)
-                    SELECT 
-                        TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER),
-                        TRY_CAST(j.FirstSeen AS DATETIME2),
-                        TRY_CAST(j.FirstSeen AS DATETIME2),
-                        j.CameraId,
-                        j.CameraId,
-                        1,
-                        j.FeatureVector,
-                        1
-                    FROM OPENJSON(@Json) WITH (
-                        GlobalPersonId NVARCHAR(50),
-                        FeatureVector NVARCHAR(MAX),
-                        CameraId INT,
-                        FirstSeen NVARCHAR(50)
-                    ) j
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM UniquePersons up WITH (NOLOCK)
-                        WHERE up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
-                    );
-                    
-                    SELECT @@ROWCOUNT;";
-                        cmd.CommandTimeout = 30;
+SET NOCOUNT ON;
+DECLARE @DbId INT;
 
-                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Json", personsJson));
+-- Step 1: Check if person already exists (index lookup = instant)
+SELECT @DbId = Id FROM UniquePersons WITH (NOLOCK) 
+WHERE GlobalPersonId = @GlobalPersonId;
+
+-- Step 2: If not exists, insert (rare — SP usually handles this)
+IF @DbId IS NULL
+BEGIN
+    BEGIN TRY
+        INSERT INTO UniquePersons WITH (ROWLOCK)
+            (GlobalPersonId, FirstSeenAt, LastSeenAt, 
+             FirstSeenCameraId, LastSeenCameraId, TotalSightings, IsActive)
+        VALUES (@GlobalPersonId, @FirstSeen, @FirstSeen, 
+                @CameraId, @CameraId, 1, 1);
+        SET @DbId = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        -- Race: SP inserted between our check and insert — get the ID
+        SELECT @DbId = Id FROM UniquePersons WITH (NOLOCK) 
+        WHERE GlobalPersonId = @GlobalPersonId;
+    END CATCH
+END
+
+-- Step 3: Insert feature if missing (skip if SP already saved it)
+IF @DbId IS NOT NULL 
+   AND NOT EXISTS (SELECT 1 FROM UniquePersonFeatures WHERE UniquePersonId = @DbId)
+BEGIN
+    BEGIN TRY
+        INSERT INTO UniquePersonFeatures (UniquePersonId, FeatureVector) 
+        VALUES (@DbId, @FeatureVector);
+    END TRY
+    BEGIN CATCH
+        -- Race: SP inserted feature between check and insert — safe to skip
+    END CATCH
+END
+
+-- Step 4: Return the DbId
+SELECT ISNULL(@DbId, 0);";
+
+                        cmd.CommandTimeout = 5; // 5 seconds per person — more than enough
+
+                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@GlobalPersonId", person.GlobalPersonId));
+                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@FirstSeen", person.FirstSeen));
+                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", person.CameraId));
+                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@FeatureVector",
+                            string.Join(",", person.Features)));
 
                         var result = await cmd.ExecuteScalarAsync();
-                        saved += Convert.ToInt32(result ?? 0);
+                        var dbId = Convert.ToInt32(result ?? 0);
 
-                        await Task.Delay(200);
+                        if (dbId > 0)
+                        {
+                            OnIdentitySavedToDatabase(person.GlobalPersonId, dbId);
+                            saved++;
+                        }
                     }
                     catch (Exception ex)
                     {
-                        failed += batch.Length;
-                        _logger.LogDebug("💾 Batch flush failed: {Err}", ex.Message);
-                        await Task.Delay(500);
+                        failed++;
+                        _logger.LogWarning("💾 Flush failed for {Id}: {Err}",
+                            person.GlobalPersonId.ToString()[..8], ex.Message);
                     }
                 }
 
                 if (saved > 0 || failed > 0)
                 {
-                    _logger.LogWarning("💾 Flush complete: {Saved} saved, {Failed} failed",
-                        saved, failed);
+                    _logger.LogWarning("💾 Flush complete: {Saved} saved, {Failed} failed", saved, failed);
                 }
             }
             catch (Exception ex)
@@ -1190,7 +1205,7 @@ namespace PersonDetection.Infrastructure.Identity
         private DateTime _lastTodayCountUpdate = DateTime.MinValue;
         private volatile bool _isRefreshingTodayCount = false;
         private int _todayConfirmedCount = 0;
-        private int _startupConfirmedCount = 0;  
+        private int _startupConfirmedCount = 0;
         private DateTime _todayCounterDate = DateTime.UtcNow.Date;
         public int GetTodayUniqueCount()
         {
@@ -1255,12 +1270,12 @@ namespace PersonDetection.Infrastructure.Identity
             {
                 var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
                     "Trusted_Connection=True;TrustServerCertificate=True;" +
-                    "Connection Timeout=3;Command Timeout=3;" +
+                    "Connection Timeout=3;Command Timeout=10;" +
                     "Pooling=true;Max Pool Size=2;Min Pool Size=0;" +
                     "Application Name=TodayCount;";
 
                 using var connection = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await connection.OpenAsync(cts.Token);
 
                 using var cmd = connection.CreateCommand();
@@ -1268,7 +1283,7 @@ namespace PersonDetection.Infrastructure.Identity
             SELECT COUNT(*)
             FROM UniquePersons WITH (NOLOCK, READUNCOMMITTED)
             WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)";
-                cmd.CommandTimeout = 3;
+                cmd.CommandTimeout = 10;
 
                 var result = await cmd.ExecuteScalarAsync(cts.Token);
                 var dbCount = Convert.ToInt32(result ?? 0);
