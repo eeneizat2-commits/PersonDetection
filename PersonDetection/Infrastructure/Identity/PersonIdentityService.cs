@@ -184,9 +184,10 @@ namespace PersonDetection.Infrastructure.Identity
 
                     using var countCmd = countConn.CreateCommand();
                     countCmd.CommandText = @"
-        SELECT COUNT(*)
-        FROM UniquePersons WITH (NOLOCK)
-        WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)";
+    SELECT COUNT(*)
+    FROM UniquePersons WITH (NOLOCK)
+    WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)
+    OPTION (MAXDOP 1)";
                     countCmd.CommandTimeout = 60;
 
                     var countResult = await countCmd.ExecuteScalarAsync();
@@ -843,11 +844,6 @@ namespace PersonDetection.Infrastructure.Identity
         }
 
 
-        /// <summary>
-        /// Flush unsaved persons in small batches.
-        /// maxToFlush = 0 means flush ALL (used at midnight/shutdown)
-        /// maxToFlush > 0 means flush only that many (used by periodic timer)
-        /// </summary>
         public async Task FlushUnsavedToDatabaseAsync(int maxToFlush = 0)
         {
             try
@@ -884,91 +880,188 @@ namespace PersonDetection.Infrastructure.Identity
 
                 var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
                     "Trusted_Connection=True;TrustServerCertificate=True;" +
-                    "Connection Timeout=10;Command Timeout=10;Pooling=false;";
+                    "Connection Timeout=30;Command Timeout=120;Pooling=false;";
 
                 int saved = 0;
+                int reconciled = 0;
                 int failed = 0;
 
-                using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                await conn.OpenAsync();
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 1: RECONCILE — find persons already saved by SP
+                //          SELECT only — no locks, no inserts, fast on HDD
+                // ═══════════════════════════════════════════════════════════════
+                try
+                {
+                    foreach (var batch in unsaved.Chunk(50))
+                    {
+                        try
+                        {
+                            using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                            await conn.OpenAsync();
 
-                // ✅ Process ONE person at a time — each uses index lookup = instant
-                foreach (var person in unsaved)
+                            var guidList = string.Join(",",
+                                batch.Select(p => $"'{p.GlobalPersonId}'"));
+
+                            using var cmd = conn.CreateCommand();
+                            cmd.CommandText = $@"
+                        SELECT GlobalPersonId, Id 
+                        FROM UniquePersons WITH (NOLOCK) 
+                        WHERE GlobalPersonId IN ({guidList})";
+                            cmd.CommandTimeout = 5;
+
+                            using var reader = await cmd.ExecuteReaderAsync();
+                            while (await reader.ReadAsync())
+                            {
+                                var globalId = reader.GetGuid(0);
+                                var dbId = reader.GetInt32(1);
+                                if (dbId > 0)
+                                {
+                                    OnIdentitySavedToDatabase(globalId, dbId);
+                                    reconciled++;
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug("💾 Reconcile batch failed: {Err}", ex.Message);
+                        }
+
+                        await Task.Delay(300);
+                    }
+
+                    // Remove reconciled from unsaved list
+                    if (reconciled > 0)
+                    {
+                        unsaved = unsaved
+                            .Where(p => !IsIdentitySavedToDb(p.GlobalPersonId))
+                            .ToList();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("💾 Reconcile failed: {Err}", ex.Message);
+                }
+
+                // Nothing left to save?
+                if (unsaved.Count == 0)
+                {
+                    if (reconciled > 0)
+                    {
+                        _logger.LogWarning(
+                            "💾 Flush complete: {Reconciled} reconciled (already in DB), 0 needed saving",
+                            reconciled);
+                    }
+                    return;
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 2: SAVE truly missing persons + GET their DbIds back
+                //          Same pattern as your original working code
+                // ═══════════════════════════════════════════════════════════════
+                foreach (var batch in unsaved.Chunk(50))
                 {
                     try
                     {
+                        var personsJson = System.Text.Json.JsonSerializer.Serialize(
+                            batch.Select(p => new
+                            {
+                                GlobalPersonId = p.GlobalPersonId.ToString(),
+                                FeatureVector = string.Join(",", p.Features),
+                                CameraId = p.CameraId,
+                                FirstSeen = p.FirstSeen.ToString("o")
+                            }));
+
+                        using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                        await conn.OpenAsync();
+
                         using var cmd = conn.CreateCommand();
                         cmd.CommandText = @"
 SET NOCOUNT ON;
-DECLARE @DbId INT;
 
--- Step 1: Check if person already exists (index lookup = instant)
-SELECT @DbId = Id FROM UniquePersons WITH (NOLOCK) 
-WHERE GlobalPersonId = @GlobalPersonId;
+-- Insert truly new persons
+INSERT INTO UniquePersons WITH (ROWLOCK)
+    (GlobalPersonId, FirstSeenAt, LastSeenAt, 
+     FirstSeenCameraId, LastSeenCameraId, 
+     TotalSightings, IsActive)
+SELECT 
+    TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER),
+    TRY_CAST(j.FirstSeen AS DATETIME2),
+    TRY_CAST(j.FirstSeen AS DATETIME2),
+    j.CameraId,
+    j.CameraId,
+    1,
+    1
+FROM OPENJSON(@Json) WITH (
+    GlobalPersonId NVARCHAR(50),
+    FeatureVector NVARCHAR(MAX),
+    CameraId INT,
+    FirstSeen NVARCHAR(50)
+) j
+WHERE NOT EXISTS (
+    SELECT 1 FROM UniquePersons up WITH (NOLOCK)
+    WHERE up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
+);
 
--- Step 2: If not exists, insert (rare — SP usually handles this)
-IF @DbId IS NULL
-BEGIN
-    BEGIN TRY
-        INSERT INTO UniquePersons WITH (ROWLOCK)
-            (GlobalPersonId, FirstSeenAt, LastSeenAt, 
-             FirstSeenCameraId, LastSeenCameraId, TotalSightings, IsActive)
-        VALUES (@GlobalPersonId, @FirstSeen, @FirstSeen, 
-                @CameraId, @CameraId, 1, 1);
-        SET @DbId = SCOPE_IDENTITY();
-    END TRY
-    BEGIN CATCH
-        -- Race: SP inserted between our check and insert — get the ID
-        SELECT @DbId = Id FROM UniquePersons WITH (NOLOCK) 
-        WHERE GlobalPersonId = @GlobalPersonId;
-    END CATCH
-END
+-- Insert features for new persons (TRY/CATCH handles race)
+BEGIN TRY
+    INSERT INTO UniquePersonFeatures WITH (ROWLOCK) (UniquePersonId, FeatureVector)
+    SELECT up.Id, j.FeatureVector
+    FROM OPENJSON(@Json) WITH (
+        GlobalPersonId NVARCHAR(50),
+        FeatureVector NVARCHAR(MAX)
+    ) j
+    INNER JOIN UniquePersons up WITH (NOLOCK) 
+        ON up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
+    WHERE j.FeatureVector IS NOT NULL 
+        AND LEN(j.FeatureVector) > 100
+        AND NOT EXISTS (
+            SELECT 1 FROM UniquePersonFeatures 
+            WHERE UniquePersonId = up.Id
+        );
+END TRY
+BEGIN CATCH
+END CATCH
 
--- Step 3: Insert feature if missing (skip if SP already saved it)
-IF @DbId IS NOT NULL 
-   AND NOT EXISTS (SELECT 1 FROM UniquePersonFeatures WHERE UniquePersonId = @DbId)
-BEGIN
-    BEGIN TRY
-        INSERT INTO UniquePersonFeatures (UniquePersonId, FeatureVector) 
-        VALUES (@DbId, @FeatureVector);
-    END TRY
-    BEGIN CATCH
-        -- Race: SP inserted feature between check and insert — safe to skip
-    END CATCH
-END
+-- Return DbIds for all persons in batch
+SELECT up.GlobalPersonId, up.Id
+FROM OPENJSON(@Json) WITH (
+    GlobalPersonId NVARCHAR(50)
+) j
+INNER JOIN UniquePersons up WITH (NOLOCK)
+    ON up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER);";
 
--- Step 4: Return the DbId
-SELECT ISNULL(@DbId, 0);";
+                        cmd.CommandTimeout = 30;
+                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Json", personsJson));
 
-                        cmd.CommandTimeout = 5; // 5 seconds per person — more than enough
-
-                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@GlobalPersonId", person.GlobalPersonId));
-                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@FirstSeen", person.FirstSeen));
-                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", person.CameraId));
-                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@FeatureVector",
-                            string.Join(",", person.Features)));
-
-                        var result = await cmd.ExecuteScalarAsync();
-                        var dbId = Convert.ToInt32(result ?? 0);
-
-                        if (dbId > 0)
+                        using var reader = await cmd.ExecuteReaderAsync();
+                        while (await reader.ReadAsync())
                         {
-                            OnIdentitySavedToDatabase(person.GlobalPersonId, dbId);
-                            saved++;
+                            try
+                            {
+                                var globalId = reader.GetGuid(0);
+                                var dbId = reader.GetInt32(1);
+                                if (dbId > 0)
+                                {
+                                    OnIdentitySavedToDatabase(globalId, dbId);
+                                    saved++;
+                                }
+                            }
+                            catch { }
                         }
+
+                        await Task.Delay(200);
                     }
                     catch (Exception ex)
                     {
-                        failed++;
-                        _logger.LogWarning("💾 Flush failed for {Id}: {Err}",
-                            person.GlobalPersonId.ToString()[..8], ex.Message);
+                        failed += batch.Length;
+                        _logger.LogWarning("💾 Batch save failed: {Err}", ex.Message);
+                        await Task.Delay(500);
                     }
                 }
 
-                if (saved > 0 || failed > 0)
-                {
-                    _logger.LogWarning("💾 Flush complete: {Saved} saved, {Failed} failed", saved, failed);
-                }
+                _logger.LogWarning(
+                    "💾 Flush complete: {Reconciled} reconciled, {Saved} saved, {Failed} failed",
+                    reconciled, saved, failed);
             }
             catch (Exception ex)
             {
@@ -1280,9 +1373,10 @@ SELECT ISNULL(@DbId, 0);";
 
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText = @"
-            SELECT COUNT(*)
-            FROM UniquePersons WITH (NOLOCK, READUNCOMMITTED)
-            WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)";
+    SELECT COUNT(*)
+    FROM UniquePersons WITH (NOLOCK)
+    WHERE FirstSeenAt >= CAST(SYSUTCDATETIME() AS DATE)
+    OPTION (MAXDOP 1)";
                 cmd.CommandTimeout = 10;
 
                 var result = await cmd.ExecuteScalarAsync(cts.Token);
