@@ -149,11 +149,13 @@ namespace PersonDetection.Infrastructure.Context
 
             modelBuilder.Entity<UniquePersonFeature>(entity =>
             {
-                entity.HasKey(e => e.UniquePersonId);
+                entity.HasKey(e => e.Id);
                 entity.ToTable("UniquePersonFeatures");
+                entity.HasIndex(e => e.GlobalPersonId).IsUnique();
                 entity.HasOne(e => e.UniquePerson)
                       .WithOne()
-                      .HasForeignKey<UniquePersonFeature>(e => e.UniquePersonId);
+                      .HasForeignKey<UniquePersonFeature>(e => e.GlobalPersonId)
+                      .HasPrincipalKey<UniquePerson>(e => e.GlobalPersonId);
             });
 
             // Seed default webcam

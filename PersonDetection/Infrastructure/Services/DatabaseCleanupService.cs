@@ -1,6 +1,7 @@
 ﻿namespace PersonDetection.Infrastructure.Services
 {
     using Microsoft.EntityFrameworkCore;
+    using Microsoft.EntityFrameworkCore.Migrations;
     using Microsoft.Extensions.DependencyInjection;
     using Microsoft.Extensions.Hosting;
     using Microsoft.Extensions.Logging;
@@ -8,6 +9,7 @@
     using PersonDetection.Application.Configuration;
     using PersonDetection.Domain.Services;
     using PersonDetection.Infrastructure.Context;
+    using PersonDetection.Migrations;
 
     public class DatabaseCleanupService : BackgroundService
     {
@@ -233,6 +235,8 @@
                     ("PersonSightings", "IX_PersonSightings_UniquePersonId", 80),
                     ("PersonSightings", "IX_PersonSightings_SeenAt", 80),
                     ("DetectionResults", "IX_DetectionResults_Timestamp", 80),
+                    ("UniquePersonFeatures", "IX_UniquePersonFeatures_GlobalPersonId", 80),
+                    
                 };
 
                 int rebuilt = 0;

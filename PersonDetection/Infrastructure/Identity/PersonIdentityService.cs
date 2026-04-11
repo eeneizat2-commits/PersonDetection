@@ -229,7 +229,7 @@ namespace PersonDetection.Infrastructure.Identity
                         // ✅ NEW — LEFT JOIN with UniquePersonFeatures, fallback to old column
                         batch = await (from p in context.UniquePersons
                                        join f in context.UniquePersonFeatures
-                                           on p.Id equals f.UniquePersonId into features
+                                       on p.GlobalPersonId equals f.GlobalPersonId into features
                                        from f in features.DefaultIfEmpty()     // LEFT JOIN
                                        where p.IsActive && p.LastSeenAt >= cutoff
                                        orderby p.LastSeenAt descending, p.TotalSightings descending
@@ -1004,20 +1004,24 @@ WHERE NOT EXISTS (
 
 -- Insert features for new persons (TRY/CATCH handles race)
 BEGIN TRY
-    INSERT INTO UniquePersonFeatures WITH (ROWLOCK) (UniquePersonId, FeatureVector)
-    SELECT up.Id, j.FeatureVector
-    FROM OPENJSON(@Json) WITH (
-        GlobalPersonId NVARCHAR(50),
-        FeatureVector NVARCHAR(MAX)
-    ) j
-    INNER JOIN UniquePersons up WITH (NOLOCK) 
-        ON up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
-    WHERE j.FeatureVector IS NOT NULL 
-        AND LEN(j.FeatureVector) > 100
-        AND NOT EXISTS (
-            SELECT 1 FROM UniquePersonFeatures 
-            WHERE UniquePersonId = up.Id
-        );
+INSERT INTO UniquePersonFeatures WITH (ROWLOCK) (GlobalPersonId, FeatureVector)
+SELECT 
+    TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER), 
+    j.FeatureVector
+FROM OPENJSON(@Json) WITH (
+    GlobalPersonId NVARCHAR(50),
+    FeatureVector NVARCHAR(MAX)
+) j
+WHERE j.FeatureVector IS NOT NULL 
+    AND LEN(j.FeatureVector) > 100
+    AND EXISTS (
+        SELECT 1 FROM UniquePersons up WITH (NOLOCK)
+        WHERE up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM UniquePersonFeatures upf
+        WHERE upf.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
+    );
 END TRY
 BEGIN CATCH
 END CATCH
