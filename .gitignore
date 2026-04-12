@@ -415,3 +415,4 @@ FodyWeavers.xsd
 **/Migrations/
 /PersonDetection/Migrations/
 /PersonDetection/Models/yolo11m.onnx
+/PersonDetection/Migrations/DetectionContextModelSnapshot.cs
