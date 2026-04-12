@@ -86,7 +86,7 @@ namespace PersonDetection.Infrastructure.Streaming
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
 
-        private static readonly SemaphoreSlim _dbSaveSemaphore = new(2);
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(1,1);
 
 
         static CameraStreamProcessor()
@@ -1382,14 +1382,13 @@ namespace PersonDetection.Infrastructure.Streaming
             _logger.LogDebug("💾 Database save loop ended for camera {Id}", _cameraId);
         }
 
-        // ❌ FIND the entire BatchSaveToDatabaseAsync method
-        // 🆕 REPLACE WITH:
-
         private async Task BatchSaveToDatabaseAsync(List<TrackedPerson> persons, CancellationToken ct)
         {
             if (persons.Count == 0) return;
 
-            // 🆕 NEW: Skip save if database maintenance is running
+            // ═══════════════════════════════════════════════════════════════
+            // GUARD 1: Skip if maintenance is running
+            // ═══════════════════════════════════════════════════════════════
             try
             {
                 var dbCleanup = _serviceProvider.GetService<DatabaseCleanupService>();
@@ -1401,7 +1400,10 @@ namespace PersonDetection.Infrastructure.Streaming
             }
             catch { }
 
-            if (!await _dbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(20), ct))
+            // ═══════════════════════════════════════════════════════════════
+            // GUARD 2: Wait for semaphore (only 1 camera saves at a time)
+            // ═══════════════════════════════════════════════════════════════
+            if (!await _dbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(45), ct))
             {
                 _logger.LogDebug("⏭️ Skipping DB save for camera {Camera} — DB is busy", _cameraId);
                 return;
@@ -1409,7 +1411,9 @@ namespace PersonDetection.Infrastructure.Streaming
 
             try
             {
-                // 🆕 FIX: Single decode for all thumbnails
+                // ═══════════════════════════════════════════════════════════════
+                // PREPARE: Thumbnails + JSON
+                // ═══════════════════════════════════════════════════════════════
                 var thumbnails = GenerateAllThumbnails(persons);
 
                 var deduplicatedPersons = persons
@@ -1432,78 +1436,114 @@ namespace PersonDetection.Infrastructure.Streaming
                         p.TrackId
                     }));
 
-                using var scope = _serviceProvider.CreateScope();
-                var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
-
-                var connString = context.Database.GetConnectionString();
-                _logger.LogDebug("🔌 Connection string: {Conn}", connString);
-
-                context.Database.SetCommandTimeout(120);
-
                 var validDetections = persons.Count(p =>
                     p.Confidence >= _detectionSettings.ConfidenceThreshold);
 
-                try
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 1: Save detections via SP (with retry for deadlocks)
+                // ═══════════════════════════════════════════════════════════════
+                bool spSucceeded = false;
+                int maxRetries = 2;
+
+                for (int attempt = 0; attempt <= maxRetries; attempt++)
                 {
-                    using var connection = context.Database.GetDbConnection();
-                    if (connection.State != System.Data.ConnectionState.Open)
-                        await connection.OpenAsync(ct);
-
-                    using var lockCmd = connection.CreateCommand();
-                    lockCmd.CommandText = "SET LOCK_TIMEOUT 10000";
-                    lockCmd.CommandTimeout = 13;
-                    await lockCmd.ExecuteNonQueryAsync(ct);
-
-                    using var command = connection.CreateCommand();
-                    command.CommandText = "sp_BatchSaveDetections";
-                    command.CommandType = System.Data.CommandType.StoredProcedure;
-                    command.CommandTimeout = 120;
-
-                    command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", _cameraId));
-                    command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@TotalDetections", persons.Count));
-                    command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@ValidDetections", validDetections));
-                    command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@UniquePersonCount", _uniquePersonCount));
-                    command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@PersonsJson", personsJson));
-
-                    using var reader = await command.ExecuteReaderAsync(ct);
-                    while (await reader.ReadAsync(ct))
+                    try
                     {
-                        var globalId = reader.GetGuid(0);
-                        var dbId = reader.GetInt32(1);
-                        _identityMatcher.SetDbId(globalId, dbId);
+                        using var scope = _serviceProvider.CreateScope();
+                        var context = scope.ServiceProvider.GetRequiredService<DetectionContext>();
+                        context.Database.SetCommandTimeout(60);
+
+                        using var connection = context.Database.GetDbConnection();
+                        if (connection.State != System.Data.ConnectionState.Open)
+                            await connection.OpenAsync(ct);
+
+                        using var lockCmd = connection.CreateCommand();
+                        lockCmd.CommandText = "SET LOCK_TIMEOUT 10000";
+                        lockCmd.CommandTimeout = 13;
+                        await lockCmd.ExecuteNonQueryAsync(ct);
+
+                        using var command = connection.CreateCommand();
+                        command.CommandText = "sp_BatchSaveDetections";
+                        command.CommandType = System.Data.CommandType.StoredProcedure;
+                        command.CommandTimeout = 60;
+
+                        command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CameraId", _cameraId));
+                        command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@TotalDetections", persons.Count));
+                        command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@ValidDetections", validDetections));
+                        command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@UniquePersonCount", _uniquePersonCount));
+                        command.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@PersonsJson", personsJson));
+
+                        using var reader = await command.ExecuteReaderAsync(ct);
+                        while (await reader.ReadAsync(ct))
+                        {
+                            var globalId = reader.GetGuid(0);
+                            var dbId = reader.GetInt32(1);
+                            _identityMatcher.SetDbId(globalId, dbId);
+                        }
+
+                        spSucceeded = true;
+
+                        _logger.LogDebug("💾 SP saved {Count} persons for camera {Camera}",
+                            persons.Count, _cameraId);
+
+                        break; // ✅ Success — exit retry loop
                     }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1205 && attempt < maxRetries)
+                    {
+                        // ✅ Deadlock — wait and retry
+                        _logger.LogWarning(
+                            "💾 Deadlock camera {Camera} — retry {Attempt}/{Max}",
+                            _cameraId, attempt + 1, maxRetries);
+                        await Task.Delay(500 * (attempt + 1), ct);
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1205 && attempt >= maxRetries)
+                    {
+                        // ✅ Deadlock — all retries exhausted
+                        _logger.LogWarning(
+                            "💾 Deadlock camera {Camera} — all {Max} retries exhausted, will retry next cycle",
+                            _cameraId, maxRetries);
+                        return;
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
+                    {
+                        _logger.LogWarning(
+                            "💾 Lock timeout camera {Camera} — will retry next cycle", _cameraId);
+                        return;
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 2601 || ex.Number == 2627)
+                    {
+                        // ✅ Duplicate key — data already saved by another path
+                        _logger.LogWarning(
+                            "💾 Duplicate key camera {Camera} — data already exists, skipping", _cameraId);
+                        spSucceeded = true; // ✅ Not a failure — data is safe
+                        break;
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+                    {
+                        _logger.LogWarning(
+                            "💾 SP error camera {Camera}: {Msg} — will retry next cycle",
+                            _cameraId, ex.Message);
+                        return;
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == -2)
+                    {
+                        // ✅ Timeout — log and retry next cycle
+                        _logger.LogWarning(
+                            "💾 Timeout camera {Camera} — will retry next cycle", _cameraId);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "💾 SP save failed camera {Camera} — will retry next cycle", _cameraId);
+                        return;
+                    }
+                }
 
-                    _logger.LogDebug("💾 SP saved {Count} persons for camera {Camera}",
-                        persons.Count, _cameraId);
-                }
-                // 🆕 FIX: Removed duplicate catch block — only ONE for 1222
-                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
-                {
-                    _logger.LogWarning(
-                        "💾 Lock timeout for camera {Camera} — will retry next cycle", _cameraId);
-                    return;
-                }
-                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 2601 || ex.Number == 2627)
-                {
-                    _logger.LogWarning("💾 Duplicate key camera {Camera} — retry next cycle", _cameraId);
-                    return;
-                }
-                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
-                {
-                    _logger.LogWarning("💾 SP error camera {Camera}: {Msg} — retry next cycle",
-                        _cameraId, ex.Message);
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex,
-                        "💾 SP save failed for camera {Camera} — will retry next cycle",
-                        _cameraId);
-                    return;
-                }
-
-                // 🆕 FIX: Batch all thumbnails in ONE connection
-                if (thumbnails.Count > 0)
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 2: Save thumbnails (only if SP succeeded)
+                // ═══════════════════════════════════════════════════════════════
+                if (spSucceeded && thumbnails.Count > 0)
                 {
                     try
                     {
@@ -1513,6 +1553,9 @@ namespace PersonDetection.Infrastructure.Streaming
 
                         if (conn.State != System.Data.ConnectionState.Open)
                             await conn.OpenAsync(ct);
+
+                        int savedThumbs = 0;
+                        int failedThumbs = 0;
 
                         foreach (var (globalId, thumb) in thumbnails)
                         {
@@ -1536,15 +1579,32 @@ namespace PersonDetection.Infrastructure.Streaming
                                 cmd.Parameters.Add(dataParam);
 
                                 await cmd.ExecuteNonQueryAsync(ct);
+                                savedThumbs++;
                             }
-                            catch { }
+                            catch
+                            {
+                                failedThumbs++;
+                            }
+                        }
+
+                        if (savedThumbs > 0 || failedThumbs > 0)
+                        {
+                            _logger.LogDebug(
+                                "🖼️ Thumbnails camera {Camera}: {Saved} saved, {Failed} failed",
+                                _cameraId, savedThumbs, failedThumbs);
                         }
                     }
                     catch (Exception ex)
                     {
+                        // ✅ Non-critical — persons are already saved
                         _logger.LogDebug(ex, "Thumbnail batch failed — non-critical");
                     }
                 }
+
+                // ═══════════════════════════════════════════════════════════════
+                // PHASE 3: Let HDD breathe before next camera saves
+                // ═══════════════════════════════════════════════════════════════
+                await Task.Delay(300, ct);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
