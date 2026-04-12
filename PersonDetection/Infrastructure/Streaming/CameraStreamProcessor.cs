@@ -86,8 +86,8 @@ namespace PersonDetection.Infrastructure.Streaming
         private DateTime _lastHealthNotification = DateTime.MinValue;
         public StreamConnectionState ConnectionState => _connectionState;
 
-        private static readonly SemaphoreSlim _dbSaveSemaphore = new(1,1);
-
+        private static readonly SemaphoreSlim _dbSaveSemaphore = new(1, 1);
+        public static SemaphoreSlim DbSaveSemaphore => _dbSaveSemaphore;
 
         static CameraStreamProcessor()
         {

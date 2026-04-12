@@ -11,6 +11,7 @@ namespace PersonDetection.Infrastructure.Identity
     using PersonDetection.Domain.ValueObjects;
     using PersonDetection.Infrastructure.Context;
     using PersonDetection.Infrastructure.Services;
+    using PersonDetection.Infrastructure.Streaming;
     using System.Collections.Concurrent;
     using System.Runtime.CompilerServices;
 
@@ -846,6 +847,13 @@ namespace PersonDetection.Infrastructure.Identity
 
         public async Task FlushUnsavedToDatabaseAsync(int maxToFlush = 0)
         {
+            // ✅ Wait for BatchSave to finish — share the same HDD
+            if (!await CameraStreamProcessor.DbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(10)))
+            {
+                _logger.LogDebug("💾 Flush skipped — DB save in progress");
+                return;
+            }
+
             try
             {
                 var unsaved = new List<(Guid GlobalPersonId, float[] Features, int CameraId, DateTime FirstSeen)>();
@@ -880,7 +888,7 @@ namespace PersonDetection.Infrastructure.Identity
 
                 var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
                     "Trusted_Connection=True;TrustServerCertificate=True;" +
-                    "Connection Timeout=30;Command Timeout=120;Pooling=false;";
+                    "Connection Timeout=10;Command Timeout=30;Pooling=false;";
 
                 int saved = 0;
                 int reconciled = 0;
@@ -1055,10 +1063,24 @@ INNER JOIN UniquePersons up WITH (NOLOCK)
 
                         await Task.Delay(200);
                     }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == -2 || ex.Message.Contains("Timeout"))
+                    {
+                        failed += batch.Length;
+                        _logger.LogWarning("💾 Flush timeout — HDD busy, will retry later");
+                        await Task.Delay(2000); // ✅ Give HDD more time to recover
+                        break; // ✅ Stop processing remaining batches — try again next flush cycle
+                    }
+                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1205)
+                    {
+                        failed += batch.Length;
+                        _logger.LogWarning("💾 Flush deadlock — will retry later");
+                        await Task.Delay(1000);
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         failed += batch.Length;
-                        _logger.LogWarning("💾 Batch save failed: {Err}", ex.Message);
+                        _logger.LogWarning("💾 Flush batch failed: {Err}", ex.Message);
                         await Task.Delay(500);
                     }
                 }
@@ -1070,6 +1092,10 @@ INNER JOIN UniquePersons up WITH (NOLOCK)
             catch (Exception ex)
             {
                 _logger.LogError(ex, "💾 Flush failed");
+            }
+            finally
+            {
+                CameraStreamProcessor.DbSaveSemaphore.Release(); // ✅ NEW
             }
         }
         #endregion
