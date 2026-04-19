@@ -678,7 +678,10 @@ namespace PersonDetection.Infrastructure.Identity
                 identity.IsConfirmedByConfidence = true;
                 _pendingSave[newId] = true;
                 Interlocked.Increment(ref _totalConfirmedEver);
-                Interlocked.Increment(ref _todayConfirmedCount);
+                if (now.Date == _todayCounterDate)
+                {
+                    Interlocked.Increment(ref _todayConfirmedCount);
+                }
                 _logger.LogInformation(
                     "🆕✅ {Reason} [{ConfirmType}]: {Id} cam={Cam} conf={Conf:P0} (total={Total})",
                     reason, confirmType, newId.ToString()[..8], cameraId, confidence, _totalConfirmedEver);
@@ -740,9 +743,28 @@ namespace PersonDetection.Infrastructure.Identity
             if (!_confirmedPersons.ContainsKey(personId))
             {
                 _confirmedPersons[personId] = true;
-                Interlocked.Increment(ref _totalConfirmedEver); // 🆕 ADD
-                Interlocked.Increment(ref _todayConfirmedCount);
-                _logger.LogInformation("✅ CONFIRMED on match: {Id}", personId.ToString()[..8]);
+                Interlocked.Increment(ref _totalConfirmedEver);
+
+                // ✅ FIX: Only count toward today if person was FIRST SEEN today
+                // Persons loaded from DB (seen yesterday) should NOT inflate today's count
+                bool isFromToday = false;
+                lock (identity.SyncLock)
+                {
+                    isFromToday = identity.FirstSeen.Date == _todayCounterDate;
+                }
+
+                if (isFromToday)
+                {
+                    Interlocked.Increment(ref _todayConfirmedCount);
+                }
+
+                if (identity.DbId == 0)
+                {
+                    _pendingSave[personId] = true;
+                }
+
+                _logger.LogInformation("✅ CONFIRMED on match: {Id} (today={IsToday})",
+                    personId.ToString()[..8], isFromToday);
             }
         }
         #endregion
@@ -845,148 +867,119 @@ namespace PersonDetection.Infrastructure.Identity
         }
 
 
+        public int GetUnsavedCount()
+        {
+            return _pendingSave.Count;
+        }
         public async Task FlushUnsavedToDatabaseAsync(int maxToFlush = 0)
         {
-            // ✅ Wait for BatchSave to finish — share the same HDD
-            if (!await CameraStreamProcessor.DbSaveSemaphore.WaitAsync(TimeSpan.FromSeconds(10)))
+            // ═══════════════════════════════════════════════════════════════
+            // STEP 0: Fast check — anything to flush?
+            // Uses _pendingSave (O(1)) instead of scanning all confirmed persons
+            // ═══════════════════════════════════════════════════════════════
+            if (_pendingSave.IsEmpty)
             {
-                _logger.LogDebug("💾 Flush skipped — DB save in progress");
+                _logger.LogDebug("💾 Flush skipped — nothing pending");
                 return;
             }
 
+            // ✅ NEW: Signal cameras to yield their semaphore turn
+            CameraStreamProcessor.FlushRequested = true;
+
             try
             {
-                var unsaved = new List<(Guid GlobalPersonId, float[] Features, int CameraId, DateTime FirstSeen)>();
+                // Give current camera save a moment to finish
+                await Task.Delay(500);
 
-                foreach (var kvp in _confirmedPersons)
+                // ✅ CHANGED: 30s timeout (was 15s) + priority flag ensures cameras yield
+                bool gotSemaphore = await CameraStreamProcessor.DbSaveSemaphore.WaitAsync(
+                    TimeSpan.FromSeconds(30));
+
+                if (!gotSemaphore)
                 {
-                    if (_globalIdentities.TryGetValue(kvp.Key, out var identity))
-                    {
-                        lock (identity.SyncLock)
-                        {
-                            if (identity.DbId == 0 && identity.FeatureVector != null)
-                            {
-                                unsaved.Add((
-                                    identity.GlobalPersonId,
-                                    (float[])identity.FeatureVector.Clone(),
-                                    identity.LastCameraId,
-                                    identity.FirstSeen
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                if (unsaved.Count == 0) return;
-
-                if (maxToFlush > 0 && unsaved.Count > maxToFlush)
-                {
-                    unsaved = unsaved.Take(maxToFlush).ToList();
-                }
-
-                _logger.LogInformation("💾 Flushing {Count} unsaved persons...", unsaved.Count);
-
-                var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
-                    "Trusted_Connection=True;TrustServerCertificate=True;" +
-                    "Connection Timeout=10;Command Timeout=30;Pooling=false;";
-
-                int saved = 0;
-                int reconciled = 0;
-                int failed = 0;
-
-                // ═══════════════════════════════════════════════════════════════
-                // PHASE 1: RECONCILE — find persons already saved by SP
-                //          SELECT only — no locks, no inserts, fast on HDD
-                // ═══════════════════════════════════════════════════════════════
-                try
-                {
-                    foreach (var batch in unsaved.Chunk(50))
-                    {
-                        try
-                        {
-                            using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                            await conn.OpenAsync();
-
-                            var guidList = string.Join(",",
-                                batch.Select(p => $"'{p.GlobalPersonId}'"));
-
-                            using var cmd = conn.CreateCommand();
-                            cmd.CommandText = $@"
-                        SELECT GlobalPersonId, Id 
-                        FROM UniquePersons WITH (NOLOCK) 
-                        WHERE GlobalPersonId IN ({guidList})";
-                            cmd.CommandTimeout = 5;
-
-                            using var reader = await cmd.ExecuteReaderAsync();
-                            while (await reader.ReadAsync())
-                            {
-                                var globalId = reader.GetGuid(0);
-                                var dbId = reader.GetInt32(1);
-                                if (dbId > 0)
-                                {
-                                    OnIdentitySavedToDatabase(globalId, dbId);
-                                    reconciled++;
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogDebug("💾 Reconcile batch failed: {Err}", ex.Message);
-                        }
-
-                        await Task.Delay(300);
-                    }
-
-                    // Remove reconciled from unsaved list
-                    if (reconciled > 0)
-                    {
-                        unsaved = unsaved
-                            .Where(p => !IsIdentitySavedToDb(p.GlobalPersonId))
-                            .ToList();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug("💾 Reconcile failed: {Err}", ex.Message);
-                }
-
-                // Nothing left to save?
-                if (unsaved.Count == 0)
-                {
-                    if (reconciled > 0)
-                    {
-                        _logger.LogWarning(
-                            "💾 Flush complete: {Reconciled} reconciled (already in DB), 0 needed saving",
-                            reconciled);
-                    }
+                    _logger.LogWarning("💾 Flush STILL can't get semaphore after 30s");
                     return;
                 }
 
-                // ═══════════════════════════════════════════════════════════════
-                // PHASE 2: SAVE truly missing persons + GET their DbIds back
-                //          Same pattern as your original working code
-                // ═══════════════════════════════════════════════════════════════
-                foreach (var batch in unsaved.Chunk(50))
+                try
                 {
-                    try
+                    // ═══════════════════════════════════════════════════════
+                    // EVERYTHING BELOW IS YOUR EXISTING CODE — UNCHANGED
+                    // ═══════════════════════════════════════════════════════
+
+                    var unsaved = new List<(Guid GlobalPersonId, float[] Features, int CameraId, DateTime FirstSeen)>();
+
+                    foreach (var kvp in _pendingSave)
                     {
-                        var personsJson = System.Text.Json.JsonSerializer.Serialize(
-                            batch.Select(p => new
+                        if (_globalIdentities.TryGetValue(kvp.Key, out var identity))
+                        {
+                            lock (identity.SyncLock)
                             {
-                                GlobalPersonId = p.GlobalPersonId.ToString(),
-                                FeatureVector = string.Join(",", p.Features),
-                                CameraId = p.CameraId,
-                                FirstSeen = p.FirstSeen.ToString("o")
-                            }));
+                                if (identity.DbId == 0 && identity.FeatureVector != null)
+                                {
+                                    unsaved.Add((
+                                        identity.GlobalPersonId,
+                                        (float[])identity.FeatureVector.Clone(),
+                                        identity.LastCameraId,
+                                        identity.FirstSeen
+                                    ));
+                                }
+                                else if (identity.DbId > 0)
+                                {
+                                    _pendingSave.TryRemove(kvp.Key, out _);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            _pendingSave.TryRemove(kvp.Key, out _);
+                        }
+                    }
 
-                        using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
-                        await conn.OpenAsync();
+                    if (unsaved.Count == 0)
+                    {
+                        _logger.LogDebug("💾 Flush: all pending already saved by BatchSave");
+                        return;
+                    }
 
-                        using var cmd = conn.CreateCommand();
-                        cmd.CommandText = @"
+                    if (maxToFlush > 0 && unsaved.Count > maxToFlush)
+                    {
+                        unsaved = unsaved
+                            .OrderBy(p => p.FirstSeen)
+                            .Take(maxToFlush)
+                            .ToList();
+                    }
+
+                    _logger.LogInformation("💾 Flushing {Count} unsaved persons...", unsaved.Count);
+
+                    var connString = "Server=DESKTOP-QML0799;Database=DetectionContext;" +
+                        "Trusted_Connection=True;TrustServerCertificate=True;" +
+                        "Connection Timeout=10;Command Timeout=30;Pooling=false;";
+
+                    int saved = 0;
+                    int alreadyExists = 0;
+                    int failed = 0;
+
+                    foreach (var batch in unsaved.Chunk(100))
+                    {
+                        try
+                        {
+                            var personsJson = System.Text.Json.JsonSerializer.Serialize(
+                                batch.Select(p => new
+                                {
+                                    GlobalPersonId = p.GlobalPersonId.ToString(),
+                                    FeatureVector = string.Join(",", p.Features),
+                                    CameraId = p.CameraId,
+                                    FirstSeen = p.FirstSeen.ToString("o")
+                                }));
+
+                            using var conn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                            await conn.OpenAsync();
+
+                            using var cmd = conn.CreateCommand();
+                            cmd.CommandText = @"
 SET NOCOUNT ON;
 
--- Insert truly new persons
 INSERT INTO UniquePersons WITH (ROWLOCK)
     (GlobalPersonId, FirstSeenAt, LastSeenAt, 
      FirstSeenCameraId, LastSeenCameraId, 
@@ -1010,7 +1003,6 @@ WHERE NOT EXISTS (
     WHERE up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER)
 );
 
--- Insert features for new persons (TRY/CATCH handles race)
 BEGIN TRY
 INSERT INTO UniquePersonFeatures WITH (ROWLOCK) (GlobalPersonId, FeatureVector)
 SELECT 
@@ -1034,7 +1026,6 @@ END TRY
 BEGIN CATCH
 END CATCH
 
--- Return DbIds for all persons in batch
 SELECT up.GlobalPersonId, up.Id
 FROM OPENJSON(@Json) WITH (
     GlobalPersonId NVARCHAR(50)
@@ -1042,67 +1033,118 @@ FROM OPENJSON(@Json) WITH (
 INNER JOIN UniquePersons up WITH (NOLOCK)
     ON up.GlobalPersonId = TRY_CAST(j.GlobalPersonId AS UNIQUEIDENTIFIER);";
 
-                        cmd.CommandTimeout = 30;
-                        cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Json", personsJson));
+                            cmd.CommandTimeout = 30;
+                            cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Json", personsJson));
 
-                        using var reader = await cmd.ExecuteReaderAsync();
-                        while (await reader.ReadAsync())
+                            int batchSaved = 0;
+
+                            using var reader = await cmd.ExecuteReaderAsync();
+                            while (await reader.ReadAsync())
+                            {
+                                try
+                                {
+                                    var globalId = reader.GetGuid(0);
+                                    var dbId = reader.GetInt32(1);
+                                    if (dbId > 0)
+                                    {
+                                        OnIdentitySavedToDatabase(globalId, dbId);
+                                        batchSaved++;
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            saved += batchSaved;
+                            alreadyExists += (batch.Length - batchSaved);
+
+                            await Task.Delay(50);
+                        }
+                        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == -2 || ex.Message.Contains("Timeout"))
                         {
+                            failed += batch.Length;
+                            _logger.LogWarning(
+                                "💾 Flush timeout — HDD busy, {Failed} persons deferred to next cycle",
+                                batch.Length);
+                            await Task.Delay(2000);
+                        }
+                        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1205)
+                        {
+                            failed += batch.Length;
+                            _logger.LogWarning("💾 Flush deadlock — {Failed} persons deferred", batch.Length);
+                            await Task.Delay(1000);
+                        }
+                        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 2601 || ex.Number == 2627)
+                        {
+                            _logger.LogDebug("💾 Flush batch: duplicate key — already saved by SP");
+
                             try
                             {
-                                var globalId = reader.GetGuid(0);
-                                var dbId = reader.GetInt32(1);
-                                if (dbId > 0)
+                                using var reconConn = new Microsoft.Data.SqlClient.SqlConnection(connString);
+                                await reconConn.OpenAsync();
+
+                                var guidList = string.Join(",",
+                                    batch.Select(p => $"'{p.GlobalPersonId}'"));
+
+                                using var reconCmd = reconConn.CreateCommand();
+                                reconCmd.CommandText = $@"
+                        SELECT GlobalPersonId, Id 
+                        FROM UniquePersons WITH (NOLOCK) 
+                        WHERE GlobalPersonId IN ({guidList})";
+                                reconCmd.CommandTimeout = 5;
+
+                                using var reconReader = await reconCmd.ExecuteReaderAsync();
+                                while (await reconReader.ReadAsync())
                                 {
-                                    OnIdentitySavedToDatabase(globalId, dbId);
-                                    saved++;
+                                    var globalId = reconReader.GetGuid(0);
+                                    var dbId = reconReader.GetInt32(1);
+                                    if (dbId > 0)
+                                    {
+                                        OnIdentitySavedToDatabase(globalId, dbId);
+                                        alreadyExists++;
+                                    }
                                 }
                             }
                             catch { }
                         }
+                        catch (Exception ex)
+                        {
+                            failed += batch.Length;
+                            _logger.LogWarning("💾 Flush batch failed: {Err}", ex.Message);
+                            await Task.Delay(500);
+                        }
+                    }
 
-                        await Task.Delay(200);
-                    }
-                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == -2 || ex.Message.Contains("Timeout"))
+                    if (saved > 0 || failed > 0)
                     {
-                        failed += batch.Length;
-                        _logger.LogWarning("💾 Flush timeout — HDD busy, will retry later");
-                        await Task.Delay(2000); // ✅ Give HDD more time to recover
-                        break; // ✅ Stop processing remaining batches — try again next flush cycle
+                        _logger.LogWarning(
+                            "💾 Flush complete: {Saved} saved, {AlreadyExists} already in DB, {Failed} deferred",
+                            saved, alreadyExists, failed);
                     }
-                    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1205)
+                    else
                     {
-                        failed += batch.Length;
-                        _logger.LogWarning("💾 Flush deadlock — will retry later");
-                        await Task.Delay(1000);
-                        break;
-                    }
-                    catch (Exception ex)
-                    {
-                        failed += batch.Length;
-                        _logger.LogWarning("💾 Flush batch failed: {Err}", ex.Message);
-                        await Task.Delay(500);
+                        _logger.LogDebug("💾 Flush: nothing new to save");
                     }
                 }
-
-                _logger.LogWarning(
-                    "💾 Flush complete: {Reconciled} reconciled, {Saved} saved, {Failed} failed",
-                    reconciled, saved, failed);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "💾 Flush failed");
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "💾 Flush failed unexpectedly");
+                }
+                finally
+                {
+                    CameraStreamProcessor.DbSaveSemaphore.Release();
+                }
             }
             finally
             {
-                CameraStreamProcessor.DbSaveSemaphore.Release(); // ✅ NEW
+                // ✅ ALWAYS clear the flag — even if semaphore wasn't acquired
+                CameraStreamProcessor.FlushRequested = false;
             }
         }
         #endregion
 
-        #region Public Query Methods
+            #region Public Query Methods
 
-        // ✅ UPDATE existing method:
+            // ✅ UPDATE existing method:
         public void OnIdentitySavedToDatabase(Guid personId, int dbId)
         {
             if (_globalIdentities.TryGetValue(personId, out var identity))

@@ -75,7 +75,31 @@
                     _isRunningMaintenance = false;
                 }
             }
+            // ═══════════════════════════════════════════════════════════
+            // SAFETY: Final flush on shutdown — save everything in memory
+            // ═══════════════════════════════════════════════════════════
+            try
+            {
+                var matcher = _serviceProvider.GetService<IPersonIdentityMatcher>();
+                if (matcher != null)
+                {
+                    var unsavedCount = matcher.GetUnsavedCount();
+                    if (unsavedCount > 0)
+                    {
+                        _logger.LogWarning(
+                            "💾 Shutdown: Flushing {Count} unsaved persons...", unsavedCount);
 
+                        // Flush ALL (maxToFlush = 0 means unlimited)
+                        await matcher.FlushUnsavedToDatabaseAsync(0);
+
+                        _logger.LogWarning("💾 Shutdown flush complete");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "💾 Shutdown flush failed — some persons may need recovery on next startup");
+            }
             _logger.LogInformation("🧹 Database cleanup service stopped");
         }
 
@@ -137,18 +161,62 @@
 
         private async Task FlushUnsavedPersonsIfNeeded(CancellationToken ct)
         {
-            // ✅ Every 2 minutes, flush max 200 persons
-            if ((DateTime.UtcNow - _lastFlush).TotalMinutes < 2)
-                return;
-
             try
             {
                 var matcher = _serviceProvider.GetService<IPersonIdentityMatcher>();
-                if (matcher != null)
+                if (matcher == null) return;
+
+                var unsavedCount = matcher.GetUnsavedCount();
+                var timeSinceFlush = (DateTime.UtcNow - _lastFlush).TotalSeconds;
+
+                // ═══════════════════════════════════════════════════════════
+                // Adaptive frequency:
+                //   - Many unsaved (>20): every 30 seconds
+                //   - Some unsaved (>0):  every 60 seconds
+                //   - None unsaved:       every 120 seconds (just verify)
+                // ═══════════════════════════════════════════════════════════
+                double flushIntervalSeconds;
+
+                if (unsavedCount > 20)
                 {
-                    await matcher.FlushUnsavedToDatabaseAsync(200);
-                    _lastFlush = DateTime.UtcNow;
+                    flushIntervalSeconds = 30;
                 }
+                else if (unsavedCount > 0)
+                {
+                    flushIntervalSeconds = 60;
+                }
+                else
+                {
+                    flushIntervalSeconds = 120;
+                }
+
+                if (timeSinceFlush < flushIntervalSeconds)
+                    return;
+
+                if (unsavedCount > 0)
+                {
+                    _logger.LogDebug(
+                        "💾 Flush trigger: {Count} unsaved, {Elapsed:F0}s since last flush",
+                        unsavedCount, timeSinceFlush);
+                }
+
+                // ✅ Dynamic maxToFlush based on count
+                int maxToFlush;
+                if (unsavedCount > 100)
+                {
+                    maxToFlush = 300; // Large backlog — flush aggressively
+                }
+                else if (unsavedCount > 20)
+                {
+                    maxToFlush = 200; // Medium backlog
+                }
+                else
+                {
+                    maxToFlush = 100; // Small or zero — light flush
+                }
+
+                await matcher.FlushUnsavedToDatabaseAsync(maxToFlush);
+                _lastFlush = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
