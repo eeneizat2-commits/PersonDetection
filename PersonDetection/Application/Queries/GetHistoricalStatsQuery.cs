@@ -35,7 +35,7 @@ namespace PersonDetection.Application.Queries
         }
 
         public async Task<HistoricalStatsDto> Handle(
-            GetHistoricalStatsQuery query, CancellationToken ct = default)
+     GetHistoricalStatsQuery query, CancellationToken ct = default)
         {
             DateTime startDateTime;
             DateTime endDateTime;
@@ -43,27 +43,32 @@ namespace PersonDetection.Application.Queries
 
             if (query.StartDate.HasValue && query.EndDate.HasValue)
             {
-                startDateTime = query.StartDate.Value.Date;
-                endDateTime = query.EndDate.Value.Date;
+                startDateTime = query.StartDate.Value;  // ✅ KEEP the time if it has one
+                endDateTime = query.EndDate.Value;      // ✅ KEEP the time if it has one
 
                 if (query.StartTime.HasValue)
-                    startDateTime = startDateTime.Add(query.StartTime.Value);
+                    startDateTime = startDateTime.Date.Add(query.StartTime.Value);
 
                 if (query.EndTime.HasValue)
-                    endDateTime = endDateTime.Add(query.EndTime.Value);
-                else
-                    endDateTime = endDateTime.AddDays(1).AddTicks(-1);
+                {
+                    endDateTime = endDateTime.Date.Add(query.EndTime.Value);
+                }
+                else if (endDateTime.Hour == 0 && endDateTime.Minute == 0 && endDateTime.Second == 0)
+                {
+                    // Only add full day if time is midnight (no time specified)
+                    endDateTime = endDateTime.Date.AddDays(1).AddTicks(-1);
+                }
             }
             else if (query.LastDays.HasValue && query.LastDays.Value > 0)
             {
                 // ✅ FIXED: Exactly N days including today
                 startDateTime = today.AddDays(-(query.LastDays.Value - 1)).Date;
-                endDateTime = today.AddDays(1).AddTicks(-1);
+                endDateTime = today.Date.AddDays(1).AddTicks(-1);  // ✅ FIXED: Added .Date
             }
             else
             {
-                endDateTime = today.AddDays(1).AddTicks(-1);
-                startDateTime = today.AddDays(-6);
+                endDateTime = today.Date.AddDays(1).AddTicks(-1);  // ✅ FIXED: Added .Date
+                startDateTime = today.AddDays(-6).Date;  // ✅ FIXED: Added .Date
             }
 
             _logger.LogInformation(
@@ -98,7 +103,7 @@ namespace PersonDetection.Application.Queries
                     {
                         StartDate = summary.StartDate,
                         EndDate = summary.EndDate,
-                        TotalDays = summary.TotalDays,
+                        TotalDays = 0,  // ✅ FIXED: Use 0 when cancelled
                         TotalUniquePersons = summary.TotalUniquePersons,
                         TotalDetections = summary.TotalDetections,
                         DailyStats = new List<DailyStatsDto>(),
@@ -118,7 +123,7 @@ namespace PersonDetection.Application.Queries
                     {
                         StartDate = summary.StartDate,
                         EndDate = summary.EndDate,
-                        TotalDays = summary.TotalDays,
+                        TotalDays = dailyStats.Count,  // ✅ FIXED: Use actual count
                         TotalUniquePersons = summary.TotalUniquePersons,
                         TotalDetections = summary.TotalDetections,
                         DailyStats = dailyStats,
@@ -134,7 +139,7 @@ namespace PersonDetection.Application.Queries
                 {
                     StartDate = summary.StartDate,
                     EndDate = summary.EndDate,
-                    TotalDays = summary.TotalDays,
+                    TotalDays = dailyStats.Count,  // ✅ FIXED: Use actual count instead of summary.TotalDays
                     TotalUniquePersons = summary.TotalUniquePersons,
                     TotalDetections = summary.TotalDetections,
                     DailyStats = dailyStats,
