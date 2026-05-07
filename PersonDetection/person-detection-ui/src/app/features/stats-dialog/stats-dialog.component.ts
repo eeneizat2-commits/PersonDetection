@@ -39,6 +39,8 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   error: string | null = null;
 
   selectedPeriod: string = '3';
+  filterCameraId: number | null = null;
+  cameras: any[] = [];
   customStartDateTime: string = '';
   customEndDateTime: string = '';
 
@@ -47,39 +49,33 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   ];
 
   private destroy$ = new Subject<void>();
-
-  // ✅ FIX: Track the current in-flight request so we can cancel it
   private currentRequest?: Subscription;
 
   constructor(
     private statsService: StatsService,
     private cdr: ChangeDetectorRef,
     public dialogRef: MatDialogRef<StatsDialogComponent>,
-    @Inject(MAT_DIALOG_DATA) public data: { cameraId?: number }
+    @Inject(MAT_DIALOG_DATA) public data: { cameras?: any[]; cameraId?: number }
   ) {
     this.setDefaultDateTimeRange();
+    this.cameras = data?.cameras || [];
   }
 
   ngOnInit(): void {
-    this.loadStats();
+    // ❌ REMOVED: this.loadStats();
+    // ✅ NEW: Don't load stats automatically
+    this.cdr.markForCheck();
   }
 
   ngOnDestroy(): void {
-    // ✅ FIX: Cancel any in-flight request when dialog closes
     this.cancelCurrentRequest();
     this.destroy$.next();
     this.destroy$.complete();
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // ✅ FIX: Cancel the previous HTTP request before starting a new one
-  // ══════════════════════════════════════════════════════════════
   private cancelCurrentRequest(): void {
     if (this.currentRequest && !this.currentRequest.closed) {
-      this.currentRequest.unsubscribe(); // This aborts the HTTP request
-      // When Angular's HttpClient subscription is unsubscribed,
-      // the browser aborts the XMLHttpRequest, which triggers
-      // CancellationToken on the ASP.NET Core server
+      this.currentRequest.unsubscribe();
     }
   }
 
@@ -108,9 +104,23 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   }
 
   loadStats(): void {
-    // ✅ FIX: Cancel any previous request first
-    this.cancelCurrentRequest();
+    // ✅ Validation before loading
+    if (this.selectedPeriod === 'custom') {
+      if (!this.customStartDateTime || !this.customEndDateTime) {
+        this.error = 'Please select both start and end date/time';
+        return;
+      }
+      
+      const startDate = this.parseDateTimeLocal(this.customStartDateTime);
+      const endDate = this.parseDateTimeLocal(this.customEndDateTime);
+      
+      if (!startDate || !endDate || endDate <= startDate) {
+        this.error = 'End date must be after start date';
+        return;
+      }
+    }
 
+    this.cancelCurrentRequest();
     this.loading = true;
     this.error = null;
     this.cdr.markForCheck();
@@ -125,7 +135,7 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
         observable = this.statsService.getHistoricalStatsWithDateTime(
           startDate,
           endDate,
-          this.data?.cameraId
+          this.filterCameraId || undefined
         );
       } else {
         this.error = 'Invalid date range';
@@ -135,11 +145,10 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     } else {
       const days = parseInt(this.selectedPeriod, 10);
       observable = this.statsService.getHistoricalStats(
-        days, undefined, undefined, this.data?.cameraId
+        days, undefined, undefined, this.filterCameraId || undefined
       );
     }
 
-    // ✅ FIX: Store the subscription so we can cancel it later
     this.currentRequest = observable
       .pipe(takeUntil(this.destroy$))
       .subscribe({
@@ -149,9 +158,7 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
           this.cdr.markForCheck();
         },
         error: (err) => {
-          // ✅ FIX: Don't show error for cancelled requests
           if (err.name === 'AbortError' || err.status === 0) {
-            // Request was cancelled — ignore silently
             console.debug('Stats request was cancelled');
             return;
           }
@@ -164,13 +171,17 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   }
 
   onPeriodChange(): void {
-    if (this.selectedPeriod !== 'custom') {
-      this.loadStats(); // ← Will cancel the previous request automatically now
-    } else {
-      this.cancelCurrentRequest(); // Cancel any running request
+    // ✅ NEW: Don't load automatically, just update custom range UI
+    if (this.selectedPeriod === 'custom') {
+      this.cancelCurrentRequest();
       this.loading = false;
       this.setDefaultDateTimeRange();
     }
+  }
+
+  onCameraFilterChange(): void {
+    // ✅ NEW: Just update, don't load
+    this.cdr.markForCheck();
   }
 
   openPicker(input: HTMLInputElement): void {
@@ -183,16 +194,8 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   }
 
   applyCustomRange(): void {
-    if (this.customStartDateTime && this.customEndDateTime) {
-      const start = this.parseDateTimeLocal(this.customStartDateTime);
-      const end = this.parseDateTimeLocal(this.customEndDateTime);
-
-      if (start && end && end > start) {
-        this.loadStats(); // ← Will cancel the previous request automatically now
-      } else {
-        this.error = 'End date must be after start date';
-      }
-    }
+    // ✅ This will be called by the custom range Apply button
+    this.loadStats();
   }
 
   formatHour(hour: number): string {

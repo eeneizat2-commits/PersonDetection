@@ -117,7 +117,10 @@ export class DashboardComponent implements OnInit, OnDestroy {
             disableClose: false,
             hasBackdrop: true,
             autoFocus: false,
-            restoreFocus: false
+            restoreFocus: false,
+             data: {
+            cameras: this.cameras()  // ✅ Pass cameras for reference only
+        }
         });
 
         // Remove class when dialog closes

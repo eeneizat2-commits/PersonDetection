@@ -56,8 +56,9 @@ namespace PersonDetection.Application.Queries
             }
             else if (query.LastDays.HasValue && query.LastDays.Value > 0)
             {
+                // ✅ FIXED: Exactly N days including today
+                startDateTime = today.AddDays(-(query.LastDays.Value - 1)).Date;
                 endDateTime = today.AddDays(1).AddTicks(-1);
-                startDateTime = today.AddDays(-(query.LastDays.Value - 1));
             }
             else
             {
