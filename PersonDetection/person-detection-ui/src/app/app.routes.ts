@@ -17,5 +17,10 @@ export const routes: Routes = [
         path: 'videos',
         loadComponent: () => import('./features/video-jobs/video-jobs.component')
             .then(m => m.VideoJobsComponent)
+    },
+    {
+        path: 'stats',
+        loadComponent: () => import('./features/stats-dialog/stats-dialog.component')
+            .then(m => m.StatsDialogComponent)
     }
 ];

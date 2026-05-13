@@ -16,7 +16,7 @@ export interface CameraStats {
   cameraId: number;
   cameraName: string;
   totalDetections: number;
-  uniqueToday: number;
+  uniquePersons: number;
 }
 
 export interface HistoricalStats {
@@ -52,37 +52,29 @@ export interface SummaryStats {
 export class StatsService {
   private baseUrl = `${environment.apiUrl}/stats`;
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient) { }
 
   /**
    * Get stats by number of days
    */
   getHistoricalStats(
     lastDays?: number,
-    startDate?: Date,
-    endDate?: Date,
-    cameraId?: number
+    cameraIds?: number[]
   ): Observable<HistoricalStats> {
     let params = new HttpParams();
 
     if (lastDays) {
       params = params.set('lastDays', lastDays.toString());
     }
-    
-    if (startDate) {
-      params = params.set('startDate', this.formatLocalDate(startDate));
-    }
-    
-    if (endDate) {
-      params = params.set('endDate', this.formatLocalDate(endDate));
-    }
-    
-    if (cameraId) {
-      params = params.set('cameraId', cameraId.toString());
+
+    // ✅ NEW: Pass camera IDs as comma-separated string
+    if (cameraIds && cameraIds.length > 0) {
+      params = params.set('cameraIds', cameraIds.join(','));
     }
 
     return this.http.get<HistoricalStats>(`${this.baseUrl}/historical`, { params });
   }
+
 
   /**
    * Get stats with full datetime (date + time)
@@ -90,34 +82,46 @@ export class StatsService {
   getHistoricalStatsWithDateTime(
     startDateTime: Date,
     endDateTime: Date,
-    cameraId?: number
+    cameraIds?: number[]
   ): Observable<HistoricalStats> {
     let params = new HttpParams();
 
-    // Send full datetime in ISO format but adjusted for local timezone
     params = params.set('startDate', this.formatLocalDateTime(startDateTime));
     params = params.set('endDate', this.formatLocalDateTime(endDateTime));
-    
-    if (cameraId) {
-      params = params.set('cameraId', cameraId.toString());
+
+    // ✅ NEW: Pass camera IDs as comma-separated string
+    if (cameraIds && cameraIds.length > 0) {
+      params = params.set('cameraIds', cameraIds.join(','));
     }
 
     return this.http.get<HistoricalStats>(`${this.baseUrl}/historical`, { params });
   }
 
+
   getQuickStats(
-    period: 'today' | 'yesterday' | 'week' | 'month' | '3days' | '4days', 
-    cameraId?: number
+    period: 'today' | 'yesterday' | 'week' | 'month' | '3days' | '4days',
+    cameraIds?: number[]
   ): Observable<HistoricalStats> {
     let params = new HttpParams();
-    if (cameraId) {
-      params = params.set('cameraId', cameraId.toString());
+
+    // ✅ NEW: Pass camera IDs as comma-separated string
+    if (cameraIds && cameraIds.length > 0) {
+      params = params.set('cameraIds', cameraIds.join(','));
     }
+
     return this.http.get<HistoricalStats>(`${this.baseUrl}/quick/${period}`, { params });
   }
 
-  getSummary(): Observable<SummaryStats> {
-    return this.http.get<SummaryStats>(`${this.baseUrl}/summary`);
+
+  getSummary(cameraIds?: number[]): Observable<SummaryStats> {
+    let params = new HttpParams();
+
+    // ✅ NEW: Pass camera IDs as comma-separated string
+    if (cameraIds && cameraIds.length > 0) {
+      params = params.set('cameraIds', cameraIds.join(','));
+    }
+
+    return this.http.get<SummaryStats>(`${this.baseUrl}/summary`, { params });
   }
 
   /**
@@ -133,29 +137,21 @@ export class StatsService {
   /**
    * Format datetime as local YYYY-MM-DDTHH:mm:ss string
    */
-/**
- * Format datetime as local YYYY-MM-DDTHH:mm:ss string
- * Handles datetime-local input format properly
- */
-private formatLocalDateTime(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-  
-  // ✅ FIX: Subtract timezone offset to get true local time
-  const offset = date.getTimezoneOffset() * 60000;
-  const localDate = new Date(date.getTime() - offset);
-  
-  const localYear = localDate.getUTCFullYear();
-  const localMonth = String(localDate.getUTCMonth() + 1).padStart(2, '0');
-  const localDay = String(localDate.getUTCDate()).padStart(2, '0');
-  const localHours = String(localDate.getUTCHours()).padStart(2, '0');
-  const localMinutes = String(localDate.getUTCMinutes()).padStart(2, '0');
-  const localSeconds = String(localDate.getUTCSeconds()).padStart(2, '0');
-  
-  return `${localYear}-${localMonth}-${localDay}T${localHours}:${localMinutes}:${localSeconds}`;
-}
+  /**
+   * Format datetime as local YYYY-MM-DDTHH:mm:ss string
+   * Handles datetime-local input format properly
+   */
+  private formatLocalDateTime(date: Date): string {
+    const offset = date.getTimezoneOffset() * 60000;
+    const localDate = new Date(date.getTime() - offset);
+
+    const localYear = localDate.getUTCFullYear();
+    const localMonth = String(localDate.getUTCMonth() + 1).padStart(2, '0');
+    const localDay = String(localDate.getUTCDate()).padStart(2, '0');
+    const localHours = String(localDate.getUTCHours()).padStart(2, '0');
+    const localMinutes = String(localDate.getUTCMinutes()).padStart(2, '0');
+    const localSeconds = String(localDate.getUTCSeconds()).padStart(2, '0');
+
+    return `${localYear}-${localMonth}-${localDay}T${localHours}:${localMinutes}:${localSeconds}`;
+  }
 }

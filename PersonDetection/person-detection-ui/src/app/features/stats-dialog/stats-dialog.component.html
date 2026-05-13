@@ -1,98 +1,147 @@
-<h2 mat-dialog-title>
-  <mat-icon>analytics</mat-icon>
-  Historical Statistics
-</h2>
-
-<mat-dialog-content>
-  <!-- Top: Period Selection (Full Width) -->
-  <div class="period-selector">
-    <mat-form-field appearance="outline">
-      <mat-label>Time Period</mat-label>
-      <mat-select [(value)]="selectedPeriod" (selectionChange)="onPeriodChange()">
-        <mat-option value="1">Today</mat-option>
-        <mat-option value="3">Last 3 Days</mat-option>
-        <mat-option value="4">Last 4 Days</mat-option>
-        <mat-option value="7">Last 7 Days</mat-option>
-        <mat-option value="14">Last 14 Days</mat-option>
-        <mat-option value="30">Last 30 Days</mat-option>
-        <mat-option value="custom">Custom Range</mat-option>
-      </mat-select>
-    </mat-form-field>
+<div class="stats-page-container">
+  <!-- Header -->
+  <div class="stats-header">
+    <h1>
+      <mat-icon>analytics</mat-icon>
+      Historical Statistics
+    </h1>
   </div>
 
-  <!-- Custom Date Time Range -->
-  @if (selectedPeriod === 'custom') {
-    <div class="custom-range">
-      <!-- Start DateTime -->
-      <mat-form-field appearance="outline" class="datetime-field">
-        <mat-label>Start Date & Time</mat-label>
-        <input matInput 
-               type="datetime-local" 
-               [(ngModel)]="customStartDateTime"
-               [max]="customEndDateTime"
-               #startInput>
-        <button mat-icon-button matSuffix type="button" (click)="openPicker(startInput)">
-          <mat-icon>event</mat-icon>
+  <!-- Filters Section -->
+  <mat-card class="filters-card">
+    <mat-card-header>
+      <mat-card-title>
+        <mat-icon>filter_alt</mat-icon>
+        Filters
+      </mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content>
+      <div class="filters-grid">
+        <!-- Period Selection -->
+        <div class="filter-group">
+          <mat-form-field appearance="outline">
+            <mat-label>Time Period</mat-label>
+            <mat-select [(value)]="selectedPeriod" (selectionChange)="onPeriodChange()">
+              <mat-option value="1">Today</mat-option>
+              <mat-option value="3">Last 3 Days</mat-option>
+              <mat-option value="4">Last 4 Days</mat-option>
+              <mat-option value="7">Last 7 Days</mat-option>
+              <mat-option value="14">Last 14 Days</mat-option>
+              <mat-option value="30">Last 30 Days</mat-option>
+              <mat-option value="custom">Custom Range</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <!-- Custom Date/Time Range -->
+        @if (selectedPeriod === 'custom') {
+          <div class="custom-range">
+            <mat-form-field appearance="outline" class="datetime-field">
+              <mat-label>Start Date & Time</mat-label>
+              <input matInput 
+                     type="datetime-local" 
+                     [(ngModel)]="customStartDateTime"
+                     [max]="customEndDateTime"
+                     #startInput>
+              <button mat-icon-button matSuffix type="button" (click)="openPicker(startInput)">
+                <mat-icon>event</mat-icon>
+              </button>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="datetime-field">
+              <mat-label>End Date & Time</mat-label>
+              <input matInput 
+                     type="datetime-local" 
+                     [(ngModel)]="customEndDateTime"
+                     [min]="customStartDateTime"
+                     #endInput>
+              <button mat-icon-button matSuffix type="button" (click)="openPicker(endInput)">
+                <mat-icon>event</mat-icon>
+              </button>
+            </mat-form-field>
+
+            <button mat-raised-button color="primary" (click)="applyCustomRange()"
+              [disabled]="!customStartDateTime || !customEndDateTime || loading">
+              <mat-icon>search</mat-icon>
+              Apply
+            </button>
+          </div>
+        }
+      </div>
+
+      <!-- Camera Selection -->
+      <mat-divider class="filter-divider"></mat-divider>
+
+      <div class="camera-selection">
+        <h3>
+          <mat-icon>videocam</mat-icon>
+          Select Cameras
+        </h3>
+        
+        <div class="camera-selection-controls">
+          <button mat-stroked-button (click)="clearCameraSelection()" 
+            [disabled]="selectedCameraIds.length === 0">
+            <mat-icon>close</mat-icon>
+            Clear Selection
+          </button>
+          
+          @if (selectedCameraIds.length > 0) {
+            <span class="selection-count">
+              {{ selectedCameraIds.length }} camera(s) selected
+            </span>
+          }
+        </div>
+
+        <div class="camera-checkboxes">
+          @for (camera of availableCameras; track camera.id) {
+            <mat-checkbox 
+              [checked]="isCameraSelected(camera.id)"
+              (change)="toggleCamera(camera.id)"
+              class="camera-checkbox">
+              <mat-icon class="checkbox-icon">videocam</mat-icon>
+              {{ camera.name }}
+            </mat-checkbox>
+          }
+          
+          @if (availableCameras.length === 0) {
+            <p class="no-cameras">No cameras available</p>
+          }
+        </div>
+
+        <p class="camera-hint">
+          <mat-icon>info</mat-icon>
+          Leave cameras unselected to view stats for all cameras
+        </p>
+      </div>
+
+      <!-- Search Button -->
+      <div class="filter-actions">
+        <button mat-raised-button color="primary" (click)="loadStats()" 
+          [disabled]="loading" class="search-button">
+          <mat-icon>search</mat-icon>
+          Search Statistics
         </button>
-      </mat-form-field>
-
-      <!-- End DateTime -->
-      <mat-form-field appearance="outline" class="datetime-field">
-        <mat-label>End Date & Time</mat-label>
-        <input matInput 
-               type="datetime-local" 
-               [(ngModel)]="customEndDateTime"
-               [min]="customStartDateTime"
-               #endInput>
-        <button mat-icon-button matSuffix type="button" (click)="openPicker(endInput)">
-          <mat-icon>event</mat-icon>
-        </button>
-      </mat-form-field>
-
-      <button mat-raised-button color="primary" (click)="applyCustomRange()"
-        [disabled]="!customStartDateTime || !customEndDateTime || loading">
-        <mat-icon>search</mat-icon>
-        Apply
-      </button>
-    </div>
-  }
-
-  <!-- Camera Filter & Search Button (Bottom of filters) -->
-  <div class="filter-section">
-    <mat-form-field appearance="outline" class="camera-filter-field">
-      <mat-label>Filter by Camera ID (Optional)</mat-label>
-      <input matInput 
-             type="number" 
-             [(ngModel)]="filterCameraId"
-             placeholder="Leave empty for all cameras"
-             min="1">
-      @if (filterCameraId) {
-        <button mat-icon-button matSuffix type="button" (click)="filterCameraId = null">
-          <mat-icon>close</mat-icon>
-        </button>
-      }
-      <mat-hint>Enter a camera ID to view stats for that specific camera</mat-hint>
-    </mat-form-field>
-
-    <button mat-raised-button color="primary" (click)="loadStats()" [disabled]="loading" class="search-button">
-      <mat-icon>search</mat-icon>
-      Search
-    </button>
-  </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
 
   <!-- Loading Spinner -->
   @if (loading) {
     <div class="loading">
-      <mat-spinner diameter="40"></mat-spinner>
+      <mat-spinner diameter="50"></mat-spinner>
       <span>Loading statistics...</span>
     </div>
   }
 
   <!-- Error Message -->
   @if (error) {
-    <div class="error">
+    <div class="error-banner">
       <mat-icon>error</mat-icon>
-      {{ error }}
+      <span>{{ error }}</span>
+      <button mat-icon-button (click)="error = null">
+        <mat-icon>close</mat-icon>
+      </button>
     </div>
   }
 
@@ -101,143 +150,178 @@
     <div class="stats-content">
       <!-- Summary Cards -->
       <div class="summary-cards">
-        <div class="stat-card">
-          <div class="stat-icon">
-            <mat-icon>people</mat-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ stats.totalUniquePersons | number }}</span>
-            <span class="stat-label">Total Unique</span>
-          </div>
-        </div>
+        <mat-card class="stat-card">
+          <mat-card-content>
+            <div class="stat-icon">
+              <mat-icon>people</mat-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ stats.totalUniquePersons | number }}</span>
+              <span class="stat-label">Total Unique Persons</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
 
-        <div class="stat-card">
-          <div class="stat-icon">
-            <mat-icon>visibility</mat-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ stats.totalDetections | number }}</span>
-            <span class="stat-label">Detections</span>
-          </div>
-        </div>
+        <mat-card class="stat-card">
+          <mat-card-content>
+            <div class="stat-icon">
+              <mat-icon>visibility</mat-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ stats.totalDetections | number }}</span>
+              <span class="stat-label">Total Detections</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
 
-        <div class="stat-card">
-          <div class="stat-icon">
-            <mat-icon>calendar_today</mat-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ stats.totalDays }}</span>
-            <span class="stat-label">Days</span>
-          </div>
-        </div>
+        <mat-card class="stat-card">
+          <mat-card-content>
+            <div class="stat-icon">
+              <mat-icon>calendar_today</mat-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ stats.totalDays }}</span>
+              <span class="stat-label">Days in Period</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
 
-        <div class="stat-card">
-          <div class="stat-icon">
-            <mat-icon>trending_up</mat-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ stats.totalDays > 0 ? (stats.totalUniquePersons / stats.totalDays |
-              number:'1.0-0') : 0 }}</span>
-            <span class="stat-label">Daily Avg</span>
-          </div>
-        </div>
+        <mat-card class="stat-card">
+          <mat-card-content>
+            <div class="stat-icon">
+              <mat-icon>trending_up</mat-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">
+                {{ stats.totalDays > 0 
+                  ? (stats.totalUniquePersons / stats.totalDays | number:'1.0-0') 
+                  : 0 }}
+              </span>
+              <span class="stat-label">Daily Average</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
       </div>
 
       <!-- Date Range Display -->
-      <div class="date-range">
+      <div class="date-range-display">
         <mat-chip-set>
           <mat-chip>
             <mat-icon>date_range</mat-icon>
             {{ formatDateTime(stats.startDate) }} - {{ formatDateTime(stats.endDate) }}
           </mat-chip>
+          
+          @if (selectedCameraIds.length > 0) {
+            <mat-chip>
+              <mat-icon>videocam</mat-icon>
+              {{ getSelectedCameraNames() }}
+            </mat-chip>
+          }
         </mat-chip-set>
       </div>
 
-      <!-- Filter Info Badge -->
-      @if (filterCameraId) {
-        <div class="filter-info">
-          <mat-chip>
-            <mat-icon>filter_alt</mat-icon>
-            Filtered by Camera ID: {{ filterCameraId }}
-          </mat-chip>
-        </div>
-      }
+      <!-- Daily Breakdown Section -->
+      <mat-card class="daily-section">
+        <mat-card-header>
+          <mat-card-title>
+            <mat-icon>event_note</mat-icon>
+            Daily Breakdown
+          </mat-card-title>
+        </mat-card-header>
 
-      <!-- Daily Breakdown Table -->
-      <h3>Daily Breakdown</h3>
-      <div class="table-container">
-        <table mat-table [dataSource]="stats.dailyStats" class="daily-table">
-          <ng-container matColumnDef="date">
-            <th mat-header-cell *matHeaderCellDef>Date</th>
-            <td mat-cell *matCellDef="let row">{{ formatDate(row.date) }}</td>
-          </ng-container>
+        <mat-card-content>
+          <div class="table-container">
+            <table mat-table [dataSource]="stats.dailyStats" class="daily-table">
+              <!-- Date Column -->
+              <ng-container matColumnDef="date">
+                <th mat-header-cell *matHeaderCellDef>Date</th>
+                <td mat-cell *matCellDef="let row">{{ formatDate(row.date) }}</td>
+              </ng-container>
 
-          <ng-container matColumnDef="dayName">
-            <th mat-header-cell *matHeaderCellDef>Day</th>
-            <td mat-cell *matCellDef="let row">{{ row.dayName }}</td>
-          </ng-container>
+              <!-- Day Name Column -->
+              <ng-container matColumnDef="dayName">
+                <th mat-header-cell *matHeaderCellDef>Day</th>
+                <td mat-cell *matCellDef="let row">{{ row.dayName }}</td>
+              </ng-container>
 
-          <ng-container matColumnDef="uniquePersons">
-            <th mat-header-cell *matHeaderCellDef>Unique</th>
-            <td mat-cell *matCellDef="let row">
-              <span class="highlight">{{ row.uniquePersons | number }}</span>
-            </td>
-          </ng-container>
+              <!-- Unique Persons Column -->
+              <ng-container matColumnDef="uniquePersons">
+                <th mat-header-cell *matHeaderCellDef>Unique Persons</th>
+                <td mat-cell *matCellDef="let row">
+                  <span class="highlight-value">{{ row.uniquePersons | number }}</span>
+                </td>
+              </ng-container>
 
-          <ng-container matColumnDef="totalDetections">
-            <th mat-header-cell *matHeaderCellDef>Detections</th>
-            <td mat-cell *matCellDef="let row">{{ row.totalDetections | number }}</td>
-          </ng-container>
+              <!-- Total Detections Column -->
+              <ng-container matColumnDef="totalDetections">
+                <th mat-header-cell *matHeaderCellDef>Detections</th>
+                <td mat-cell *matCellDef="let row">{{ row.totalDetections | number }}</td>
+              </ng-container>
 
-          <ng-container matColumnDef="peakHour">
-            <th mat-header-cell *matHeaderCellDef>Peak Hour</th>
-            <td mat-cell *matCellDef="let row">
-              {{ formatHour(row.peakHour) }}
-              <small>({{ row.peakHourCount }})</small>
-            </td>
-          </ng-container>
+              <!-- Peak Hour Column -->
+              <ng-container matColumnDef="peakHour">
+                <th mat-header-cell *matHeaderCellDef>Peak Hour</th>
+                <td mat-cell *matCellDef="let row">
+                  {{ formatHour(row.peakHour) }}
+                  <small class="peak-count">({{ row.peakHourCount }})</small>
+                </td>
+              </ng-container>
 
-          <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-          <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
-        </table>
-      </div>
-
-      <!-- Camera Breakdown -->
-      @if (stats.cameraBreakdown && stats.cameraBreakdown.length > 0) {
-        <div class="camera-breakdown">
-          <h3>Camera Breakdown</h3>
-          <div class="camera-cards">
-            @for (cam of stats.cameraBreakdown; track cam.cameraId) {
-              <div class="camera-card">
-                <div class="camera-name">
-                  <mat-icon>videocam</mat-icon>
-                  <span>{{ cam.cameraName }}</span>
-                </div>
-                <div class="camera-stats">
-                  {{ cam.totalDetections | number }} detections
-                </div>
-              </div>
-            }
+              <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+              <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+            </table>
           </div>
-        </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Camera Breakdown Section -->
+      @if (stats.cameraBreakdown && stats.cameraBreakdown.length > 0) {
+        <mat-card class="camera-section">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>videocam</mat-icon>
+              Camera Breakdown
+            </mat-card-title>
+          </mat-card-header>
+
+          <mat-card-content>
+            <div class="camera-cards">
+              @for (cam of stats.cameraBreakdown; track cam.cameraId) {
+                <mat-card class="camera-card">
+                  <mat-card-content>
+                    <div class="camera-name">
+                      <mat-icon>videocam</mat-icon>
+                      <span>{{ cam.cameraName }}</span>
+                    </div>
+                    <mat-divider></mat-divider>
+                    <div class="camera-stats-grid">
+                      <div class="camera-stat">
+                        <span class="stat-label">Detections</span>
+                        <span class="stat-value">{{ cam.totalDetections | number }}</span>
+                      </div>
+                      <div class="camera-stat">
+                        <span class="stat-label">Unique Persons</span>
+                        <span class="stat-value">{{ cam.uniquePersons | number }}</span>
+                      </div>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+              }
+            </div>
+          </mat-card-content>
+        </mat-card>
       }
     </div>
   }
 
-  <!-- Empty State (when no search performed) -->
-  @if (!stats && !loading) {
-    <div class="empty-state">
-      <mat-icon>assessment</mat-icon>
-      <h3>No data loaded</h3>
-      <p>Select your filters and click "Search" to view results</p>
-    </div>
+  <!-- Empty State -->
+  @if (!stats && !loading && !error) {
+    <mat-card class="empty-state">
+      <mat-card-content>
+        <mat-icon>assessment</mat-icon>
+        <h3>No Data Loaded</h3>
+        <p>Select your filters and click "Search Statistics" to view results</p>
+      </mat-card-content>
+    </mat-card>
   }
-</mat-dialog-content>
-
-<mat-dialog-actions align="end">
-  <button mat-button (click)="close()">Close</button>
-  <button mat-raised-button color="primary" (click)="loadStats()" [disabled]="loading">
-    <mat-icon>refresh</mat-icon>
-    Refresh
-  </button>
-</mat-dialog-actions>
+</div>

@@ -104,30 +104,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
     }
 
 
-    openStatsDialog(): void {
-        // Add class to body to prevent background scroll
-        document.body.classList.add('dialog-open');
 
-        const dialogRef = this.dialog.open(StatsDialogComponent, {
-            width: '900px',
-            maxWidth: '95vw',
-            maxHeight: '90vh',
-            panelClass: 'stats-dialog-panel',        // ← Add this
-            backdropClass: 'stats-dialog-backdrop',   // ← Add this
-            disableClose: false,
-            hasBackdrop: true,
-            autoFocus: false,
-            restoreFocus: false,
-             data: {
-            cameras: this.cameras()  // ✅ Pass cameras for reference only
-        }
-        });
-
-        // Remove class when dialog closes
-        dialogRef.afterClosed().subscribe(() => {
-            document.body.classList.remove('dialog-open');
-        });
-    }
 
     private loadCameras(): void {
         this.isLoading.set(true);

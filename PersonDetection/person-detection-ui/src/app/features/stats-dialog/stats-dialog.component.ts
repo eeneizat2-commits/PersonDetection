@@ -1,8 +1,7 @@
 // features/stats-dialog/stats-dialog.component.ts
-import { Component, OnInit, OnDestroy, Inject, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MAT_DIALOG_DATA, MatDialogRef, MatDialogModule } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTableModule } from '@angular/material/table';
@@ -11,8 +10,18 @@ import { MatInputModule } from '@angular/material/input';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { StatsService, HistoricalStats } from '../../services/stats.service';
+import { CameraConfigService } from '../../services/camera-config.service';
 import { Subject, Subscription, takeUntil } from 'rxjs';
+import { CameraDto } from '../../core/models/detection.models';
+import { MatCard, MatCardContent, MatCardHeader, MatCardModule } from "@angular/material/card";
+import { MatDivider } from "@angular/material/divider";
+
+interface CameraOption {
+  id: number;
+  name: string;
+}
 
 @Component({
   selector: 'app-stats-dialog',
@@ -20,7 +29,6 @@ import { Subject, Subscription, takeUntil } from 'rxjs';
   imports: [
     CommonModule,
     FormsModule,
-    MatDialogModule,
     MatButtonModule,
     MatIconModule,
     MatTableModule,
@@ -28,19 +36,27 @@ import { Subject, Subscription, takeUntil } from 'rxjs';
     MatInputModule,
     MatFormFieldModule,
     MatProgressSpinnerModule,
-    MatChipsModule
-  ],
+    MatChipsModule,
+    MatCheckboxModule,
+    MatCard,
+    MatCardContent,
+    MatCardHeader,
+    MatCardModule,
+    MatDivider
+],
   templateUrl: './stats-dialog.component.html',
   styleUrls: ['./stats-dialog.component.scss']
 })
 export class StatsDialogComponent implements OnInit, OnDestroy {
+  // ─── Data ───
   stats: HistoricalStats | null = null;
+  availableCameras: CameraOption[] = [];
+  selectedCameraIds: number[] = [];
+
+  // ─── UI State ───
   loading = false;
   error: string | null = null;
-
   selectedPeriod: string = '3';
-  filterCameraId: number | null = null;
-  cameras: any[] = [];
   customStartDateTime: string = '';
   customEndDateTime: string = '';
 
@@ -53,18 +69,14 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
 
   constructor(
     private statsService: StatsService,
-    private cdr: ChangeDetectorRef,
-    public dialogRef: MatDialogRef<StatsDialogComponent>,
-    @Inject(MAT_DIALOG_DATA) public data: { cameras?: any[]; cameraId?: number }
+    private cameraConfigService: CameraConfigService,  // ✅ Changed
+    private cdr: ChangeDetectorRef
   ) {
     this.setDefaultDateTimeRange();
-    this.cameras = data?.cameras || [];
   }
 
   ngOnInit(): void {
-    // ❌ REMOVED: this.loadStats();
-    // ✅ NEW: Don't load stats automatically
-    this.cdr.markForCheck();
+    this.loadAvailableCameras();
   }
 
   ngOnDestroy(): void {
@@ -73,12 +85,63 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     this.destroy$.complete();
   }
 
-  private cancelCurrentRequest(): void {
-    if (this.currentRequest && !this.currentRequest.closed) {
-      this.currentRequest.unsubscribe();
-    }
+  // ─── Camera Management ───
+
+  private loadAvailableCameras(): void {
+    // ✅ Use existing loadCameras() method - map CameraDto to CameraOption
+    this.cameraConfigService.loadCameras()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (cameras: CameraDto[]) => {
+          // Map CameraDto to simple CameraOption {id, name}
+          this.availableCameras = cameras.map(c => ({
+            id: c.id,
+            name: c.name
+          }));
+          this.cdr.markForCheck();
+        },
+        error: (err) => {
+          console.error('Failed to load cameras:', err);
+          this.error = 'Failed to load available cameras';
+          this.cdr.markForCheck();
+        }
+      });
   }
 
+  // ✅ Toggle camera selection
+  toggleCamera(cameraId: number): void {
+    const index = this.selectedCameraIds.indexOf(cameraId);
+    if (index > -1) {
+      this.selectedCameraIds.splice(index, 1);
+    } else {
+      this.selectedCameraIds.push(cameraId);
+    }
+    this.cdr.markForCheck();
+  }
+
+  // ✅ Check if camera is selected
+  isCameraSelected(cameraId: number): boolean {
+    return this.selectedCameraIds.includes(cameraId);
+  }
+
+  // ✅ Clear all camera selections
+  clearCameraSelection(): void {
+    this.selectedCameraIds = [];
+    this.cdr.markForCheck();
+  }
+
+  // ✅ Get selected camera names for display
+  getSelectedCameraNames(): string {
+    if (this.selectedCameraIds.length === 0) {
+      return 'All Cameras';
+    }
+    return this.selectedCameraIds
+      .map(id => this.availableCameras.find(c => c.id === id)?.name)
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  // ─── Date/Time Management ───
   private setDefaultDateTimeRange(): void {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -103,17 +166,32 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     return new Date(dateTimeStr);
   }
 
+  onPeriodChange(): void {
+    if (this.selectedPeriod === 'custom') {
+      this.cancelCurrentRequest();
+      this.loading = false;
+      this.setDefaultDateTimeRange();
+    }
+  }
+
+  // ─── Data Loading ───
+  private cancelCurrentRequest(): void {
+    if (this.currentRequest && !this.currentRequest.closed) {
+      this.currentRequest.unsubscribe();
+    }
+  }
+
   loadStats(): void {
-    // ✅ Validation before loading
+    // ✅ Validation
     if (this.selectedPeriod === 'custom') {
       if (!this.customStartDateTime || !this.customEndDateTime) {
         this.error = 'Please select both start and end date/time';
         return;
       }
-      
+
       const startDate = this.parseDateTimeLocal(this.customStartDateTime);
       const endDate = this.parseDateTimeLocal(this.customEndDateTime);
-      
+
       if (!startDate || !endDate || endDate <= startDate) {
         this.error = 'End date must be after start date';
         return;
@@ -127,6 +205,9 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
 
     let observable;
 
+    // ✅ Pass selected camera IDs (undefined if empty = all cameras)
+    const cameraFilter = this.selectedCameraIds.length > 0 ? this.selectedCameraIds : undefined;
+
     if (this.selectedPeriod === 'custom' && this.customStartDateTime && this.customEndDateTime) {
       const startDate = this.parseDateTimeLocal(this.customStartDateTime);
       const endDate = this.parseDateTimeLocal(this.customEndDateTime);
@@ -135,7 +216,7 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
         observable = this.statsService.getHistoricalStatsWithDateTime(
           startDate,
           endDate,
-          this.filterCameraId || undefined
+          cameraFilter
         );
       } else {
         this.error = 'Invalid date range';
@@ -145,7 +226,8 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
     } else {
       const days = parseInt(this.selectedPeriod, 10);
       observable = this.statsService.getHistoricalStats(
-        days, undefined, undefined, this.filterCameraId || undefined
+        days,
+        cameraFilter
       );
     }
 
@@ -162,7 +244,7 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
             console.debug('Stats request was cancelled');
             return;
           }
-          this.error = 'Failed to load statistics';
+          this.error = 'Failed to load statistics. Please try again.';
           this.loading = false;
           this.cdr.markForCheck();
           console.error(err);
@@ -170,20 +252,7 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
       });
   }
 
-  onPeriodChange(): void {
-    // ✅ NEW: Don't load automatically, just update custom range UI
-    if (this.selectedPeriod === 'custom') {
-      this.cancelCurrentRequest();
-      this.loading = false;
-      this.setDefaultDateTimeRange();
-    }
-  }
-
-  onCameraFilterChange(): void {
-    // ✅ NEW: Just update, don't load
-    this.cdr.markForCheck();
-  }
-
+  // ─── UI Utilities ───
   openPicker(input: HTMLInputElement): void {
     if (typeof input.showPicker === 'function') {
       input.showPicker();
@@ -194,7 +263,6 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
   }
 
   applyCustomRange(): void {
-    // ✅ This will be called by the custom range Apply button
     this.loadStats();
   }
 
@@ -220,9 +288,5 @@ export class StatsDialogComponent implements OnInit, OnDestroy {
       minute: '2-digit',
       hour12: true
     });
-  }
-
-  close(): void {
-    this.dialogRef.close();
   }
 }

@@ -15,9 +15,16 @@ namespace PersonDetection.Application.Queries
         public int? LastDays { get; set; }
         public DateTime? StartDate { get; set; }
         public DateTime? EndDate { get; set; }
-        public int? CameraId { get; set; }
+        public List<int>? CameraIds { get; set; } = null;
         public TimeSpan? StartTime { get; set; }
         public TimeSpan? EndTime { get; set; }
+        public string? GetCameraIdsAsString()
+        {
+            if (CameraIds == null || CameraIds.Count == 0)
+                return null;
+
+            return string.Join(",", CameraIds);
+        }
     }
 
     public class GetHistoricalStatsHandler : IQueryHandler<GetHistoricalStatsQuery, HistoricalStatsDto>
@@ -73,7 +80,7 @@ namespace PersonDetection.Application.Queries
 
             _logger.LogInformation(
                 "📊 Stats: [{Start:yyyy-MM-dd HH:mm}] to [{End:yyyy-MM-dd HH:mm}], Camera: {Camera}",
-                startDateTime, endDateTime, query.CameraId?.ToString() ?? "All");
+                startDateTime, endDateTime, query.CameraIds?.ToString() ?? "All");
 
             try
             {
@@ -93,7 +100,7 @@ namespace PersonDetection.Application.Queries
 
                 // 1. Summary
                 var summary = await GetSummaryAsync(
-                    connection, startDateTime, endDateTime, query.CameraId, ct);
+             connection, startDateTime, endDateTime, query.CameraIds, ct);
 
                 // ✅ FIX: Check between expensive operations
                 if (ct.IsCancellationRequested)
@@ -113,7 +120,7 @@ namespace PersonDetection.Application.Queries
 
                 // 2. Daily Stats
                 var dailyStats = await GetDailyStatsAsync(
-                    connection, startDateTime, endDateTime, query.CameraId, ct);
+            connection, startDateTime, endDateTime, query.CameraIds, ct);
 
                 // ✅ FIX: Check before third query
                 if (ct.IsCancellationRequested)
@@ -133,7 +140,7 @@ namespace PersonDetection.Application.Queries
 
                 // 3. Camera Breakdown
                 var cameraBreakdown = await GetCameraBreakdownAsync(
-                    connection, startDateTime, endDateTime, ct);
+             connection, startDateTime, endDateTime, query.CameraIds, ct);
 
                 var result = new HistoricalStatsDto
                 {
@@ -184,9 +191,9 @@ namespace PersonDetection.Application.Queries
         // SP 1: Summary (already fixed — no changes needed)
         // ═══════════════════════════════════════════════════════
         private async Task<SpStatsSummary> GetSummaryAsync(
-            System.Data.Common.DbConnection connection,
-            DateTime startDate, DateTime endDate, int? cameraId,
-            CancellationToken ct)
+    System.Data.Common.DbConnection connection,
+    DateTime startDate, DateTime endDate, List<int>? cameraIds,  // ✅ Changed
+    CancellationToken ct)
         {
             try
             {
@@ -199,7 +206,9 @@ namespace PersonDetection.Application.Queries
 
                 cmd.Parameters.Add(new SqlParameter("@StartDate", startDate));
                 cmd.Parameters.Add(new SqlParameter("@EndDate", endDate));
-                cmd.Parameters.Add(new SqlParameter("@CameraId", (object?)cameraId ?? DBNull.Value));
+                // ✅ Changed: Pass comma-separated string or NULL
+                cmd.Parameters.Add(new SqlParameter("@CameraIds",
+                    (object?)(cameraIds?.Count > 0 ? string.Join(",", cameraIds) : null) ?? DBNull.Value));
 
                 using var reader = await cmd.ExecuteReaderAsync(ct);
 
@@ -246,9 +255,9 @@ namespace PersonDetection.Application.Queries
         // SP 2: Daily Stats (already fixed — no changes needed)
         // ═══════════════════════════════════════════════════════
         private async Task<List<DailyStatsDto>> GetDailyStatsAsync(
-            System.Data.Common.DbConnection connection,
-            DateTime startDate, DateTime endDate, int? cameraId,
-            CancellationToken ct)
+     System.Data.Common.DbConnection connection,
+     DateTime startDate, DateTime endDate, List<int>? cameraIds,  // ✅ Changed
+     CancellationToken ct)
         {
             var results = new List<DailyStatsDto>();
 
@@ -263,7 +272,9 @@ namespace PersonDetection.Application.Queries
 
                 cmd.Parameters.Add(new SqlParameter("@StartDate", startDate));
                 cmd.Parameters.Add(new SqlParameter("@EndDate", endDate));
-                cmd.Parameters.Add(new SqlParameter("@CameraId", (object?)cameraId ?? DBNull.Value));
+                // ✅ Changed: Pass comma-separated string or NULL
+                cmd.Parameters.Add(new SqlParameter("@CameraIds",
+                    (object?)(cameraIds?.Count > 0 ? string.Join(",", cameraIds) : null) ?? DBNull.Value));
 
                 using var reader = await cmd.ExecuteReaderAsync(ct);
 
@@ -289,7 +300,7 @@ namespace PersonDetection.Application.Queries
             catch (SqlException ex) when (ex.Number == 530)
             {
                 _logger.LogWarning("sp_GetDailyStats hit MAXRECURSION limit, using fallback");
-                results = await GetDailyStatsFallbackAsync(connection, startDate, endDate, cameraId, ct);
+                results = await GetDailyStatsFallbackAsync(connection, startDate, endDate, cameraIds, ct);  // ✅ Pass list
             }
             catch (OperationCanceledException)
             {
@@ -305,14 +316,20 @@ namespace PersonDetection.Application.Queries
             return results;
         }
 
+
         private async Task<List<DailyStatsDto>> GetDailyStatsFallbackAsync(
-            System.Data.Common.DbConnection connection,
-            DateTime startDate, DateTime endDate, int? cameraId,
-            CancellationToken ct)
+     System.Data.Common.DbConnection connection,
+     DateTime startDate, DateTime endDate, List<int>? cameraIds,  // ✅ Changed
+     CancellationToken ct)
         {
             var results = new List<DailyStatsDto>();
             var currentDate = startDate.Date;
             var endDateOnly = endDate.Date;
+
+            // ✅ Build camera filter clause
+            var cameraFilterClause = cameraIds?.Count > 0
+                ? $"AND ({string.Join(" OR ", cameraIds.Select((_, i) => $"FirstSeenCameraId = @Camera{i}"))})"
+                : "";
 
             while (currentDate <= endDateOnly)
             {
@@ -330,28 +347,27 @@ namespace PersonDetection.Application.Queries
                     var dayEnd = currentDate.AddDays(1).AddTicks(-1);
 
                     using var cmd = connection.CreateCommand();
-                    cmd.CommandText = @"
-                        SELECT 
-                            @Date AS [Date],
-                            DATENAME(WEEKDAY, @Date) AS DayName,
-                            (SELECT COUNT(*) FROM UniquePersons 
-                             WHERE IsActive = 1 
-                               AND FirstSeenAt >= @DayStart AND FirstSeenAt <= @DayEnd
-                               AND (@CameraId IS NULL OR FirstSeenCameraId = @CameraId)
-                            ) AS UniquePersons,
-                            (SELECT ISNULL(SUM(TotalDetections), 0) FROM DetectionResults 
-                             WHERE Timestamp >= @DayStart AND Timestamp <= @DayEnd
-                               AND (@CameraId IS NULL OR CameraId = @CameraId)
-                            ) AS TotalDetections,
-                            0 AS PeakHour,
-                            0 AS PeakHourCount";
+                    cmd.CommandText = $@"
+                SELECT 
+                    @Date AS [Date],
+                    DATENAME(WEEKDAY, @Date) AS DayName,
+                    (SELECT COUNT(*) FROM UniquePersons 
+                     WHERE IsActive = 1 
+                       AND FirstSeenAt >= @DayStart AND FirstSeenAt <= @DayEnd
+                       {(cameraIds?.Count > 0 ? $"AND FirstSeenCameraId IN ({string.Join(",", cameraIds)})" : "")}
+                    ) AS UniquePersons,
+                    (SELECT ISNULL(SUM(TotalDetections), 0) FROM DetectionResults 
+                     WHERE Timestamp >= @DayStart AND Timestamp <= @DayEnd
+                       {(cameraIds?.Count > 0 ? $"AND CameraId IN ({string.Join(",", cameraIds)})" : "")}
+                    ) AS TotalDetections,
+                    0 AS PeakHour,
+                    0 AS PeakHourCount";
                     cmd.CommandType = CommandType.Text;
                     cmd.CommandTimeout = CommandTimeoutSeconds;
 
                     cmd.Parameters.Add(new SqlParameter("@Date", currentDate));
                     cmd.Parameters.Add(new SqlParameter("@DayStart", dayStart));
                     cmd.Parameters.Add(new SqlParameter("@DayEnd", dayEnd));
-                    cmd.Parameters.Add(new SqlParameter("@CameraId", (object?)cameraId ?? DBNull.Value));
 
                     using var reader = await cmd.ExecuteReaderAsync(ct);
                     if (await reader.ReadAsync(ct))
@@ -391,9 +407,9 @@ namespace PersonDetection.Application.Queries
         // SP 3: Camera Breakdown — ✅ FIX: Added cancellation handling
         // ═══════════════════════════════════════════════════════
         private async Task<List<CameraBreakdownDto>> GetCameraBreakdownAsync(
-            System.Data.Common.DbConnection connection,
-            DateTime startDate, DateTime endDate,
-            CancellationToken ct)
+     System.Data.Common.DbConnection connection,
+     DateTime startDate, DateTime endDate, List<int>? cameraIds,  // ✅ Changed
+     CancellationToken ct)
         {
             var results = new List<CameraBreakdownDto>();
 
@@ -408,6 +424,9 @@ namespace PersonDetection.Application.Queries
 
                 cmd.Parameters.Add(new SqlParameter("@StartDate", startDate));
                 cmd.Parameters.Add(new SqlParameter("@EndDate", endDate));
+                // ✅ Changed: Pass comma-separated string or NULL
+                cmd.Parameters.Add(new SqlParameter("@CameraIds",
+                    (object?)(cameraIds?.Count > 0 ? string.Join(",", cameraIds) : null) ?? DBNull.Value));
 
                 using var reader = await cmd.ExecuteReaderAsync(ct);
 

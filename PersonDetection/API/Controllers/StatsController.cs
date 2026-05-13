@@ -23,6 +23,7 @@ namespace PersonDetection.API.Controllers
             _logger = logger;
         }
 
+        // PersonDetection.API/Controllers/StatsController.cs
         [HttpGet("historical")]
         public async Task<ActionResult<HistoricalStatsDto>> GetHistoricalStats(
             [FromQuery] int? lastDays = null,
@@ -30,17 +31,31 @@ namespace PersonDetection.API.Controllers
             [FromQuery] DateTime? endDate = null,
             [FromQuery] string? startTime = null,
             [FromQuery] string? endTime = null,
-            [FromQuery] int? cameraId = null,
+            [FromQuery] string? cameraIds = null,  // ✅ Changed: comma-separated string
             CancellationToken ct = default)
         {
             try
             {
+                // ✅ Parse comma-separated camera IDs
+                List<int>? parsedCameraIds = null;
+                if (!string.IsNullOrWhiteSpace(cameraIds))
+                {
+                    parsedCameraIds = cameraIds
+                        .Split(',', System.StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => int.TryParse(s.Trim(), out var id) ? id : 0)
+                        .Where(id => id > 0)
+                        .ToList();
+
+                    if (parsedCameraIds.Count == 0)
+                        parsedCameraIds = null;
+                }
+
                 var query = new GetHistoricalStatsQuery
                 {
                     LastDays = lastDays,
                     StartDate = startDate,
                     EndDate = endDate,
-                    CameraId = cameraId
+                    CameraIds = parsedCameraIds  // ✅ Changed
                 };
 
                 if (!string.IsNullOrEmpty(startTime) && TimeSpan.TryParse(startTime, out var st))
@@ -52,12 +67,9 @@ namespace PersonDetection.API.Controllers
                 var result = await _queryDispatcher.Dispatch<HistoricalStatsDto>(query, ct);
                 return Ok(result);
             }
-            // ✅ FIX: Catch cancellation at the controller level too
             catch (OperationCanceledException)
             {
                 _logger.LogInformation("Historical stats request cancelled by client");
-                // Return empty 200 so Angular doesn't get a network error
-                // Alternatively: return StatusCode(499);
                 return Ok(new HistoricalStatsDto
                 {
                     StartDate = startDate ?? DateTime.Today,
@@ -74,11 +86,25 @@ namespace PersonDetection.API.Controllers
         [HttpGet("quick/{period}")]
         public async Task<ActionResult<HistoricalStatsDto>> GetQuickStats(
             [FromRoute] string period,
-            [FromQuery] int? cameraId = null,
+            [FromQuery] string? cameraIds = null,  // ✅ Changed
             CancellationToken ct = default)
         {
             try
             {
+                // ✅ Parse comma-separated camera IDs
+                List<int>? parsedCameraIds = null;
+                if (!string.IsNullOrWhiteSpace(cameraIds))
+                {
+                    parsedCameraIds = cameraIds
+                        .Split(',', System.StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => int.TryParse(s.Trim(), out var id) ? id : 0)
+                        .Where(id => id > 0)
+                        .ToList();
+
+                    if (parsedCameraIds.Count == 0)
+                        parsedCameraIds = null;
+                }
+
                 var today = DateTime.Today;
 
                 int days = period.ToLower() switch
@@ -95,7 +121,7 @@ namespace PersonDetection.API.Controllers
                 var query = new GetHistoricalStatsQuery
                 {
                     LastDays = days,
-                    CameraId = cameraId
+                    CameraIds = parsedCameraIds  // ✅ Changed
                 };
 
                 if (period.ToLower() == "yesterday")
@@ -122,17 +148,43 @@ namespace PersonDetection.API.Controllers
 
         [HttpGet("summary")]
         public async Task<ActionResult<SummaryStatsDto>> GetSummary(
+            [FromQuery] string? cameraIds = null,  // ✅ NEW: Optional camera filter
             CancellationToken ct = default)
         {
             try
             {
-                var todayQuery = new GetHistoricalStatsQuery { LastDays = 1 };
-                var weekQuery = new GetHistoricalStatsQuery { LastDays = 7 };
-                var monthQuery = new GetHistoricalStatsQuery { LastDays = 30 };
+                // ✅ Parse comma-separated camera IDs
+                List<int>? parsedCameraIds = null;
+                if (!string.IsNullOrWhiteSpace(cameraIds))
+                {
+                    parsedCameraIds = cameraIds
+                        .Split(',', System.StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => int.TryParse(s.Trim(), out var id) ? id : 0)
+                        .Where(id => id > 0)
+                        .ToList();
+
+                    if (parsedCameraIds.Count == 0)
+                        parsedCameraIds = null;
+                }
+
+                var todayQuery = new GetHistoricalStatsQuery
+                {
+                    LastDays = 1,
+                    CameraIds = parsedCameraIds  // ✅ Changed
+                };
+                var weekQuery = new GetHistoricalStatsQuery
+                {
+                    LastDays = 7,
+                    CameraIds = parsedCameraIds  // ✅ Changed
+                };
+                var monthQuery = new GetHistoricalStatsQuery
+                {
+                    LastDays = 30,
+                    CameraIds = parsedCameraIds  // ✅ Changed
+                };
 
                 var today = await _queryDispatcher.Dispatch<HistoricalStatsDto>(todayQuery, ct);
 
-                // ✅ FIX: Check between sequential queries
                 ct.ThrowIfCancellationRequested();
 
                 var week = await _queryDispatcher.Dispatch<HistoricalStatsDto>(weekQuery, ct);
