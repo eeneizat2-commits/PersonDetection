@@ -73,7 +73,7 @@ namespace PersonDetection.Application.Commands
                         {
                             // ✅ FIX: Pass features[i] directly - AssignIdentity now accepts FeatureVector
                             var personId = _identityMatcher.GetOrCreateIdentity(features[i]);
-                            detections[i].AssignIdentity(personId, features[i]);
+                            detections[i].AssignIdentity(personId);
                         }
                     }
                     catch (Exception ex)

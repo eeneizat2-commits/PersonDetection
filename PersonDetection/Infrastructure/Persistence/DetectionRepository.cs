@@ -124,6 +124,19 @@ namespace PersonDetection.Infrastructure.Persistence
                 .AsNoTracking()
                 .ToListAsync(ct);
         }
+        public async Task<Camera?> GetByIdAsync(int cameraId, CancellationToken ct = default)
+        {
+            return await _context.Cameras
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == cameraId, ct);
+        }
+        public async Task<List<Camera>> GetAllAsync(CancellationToken ct = default)
+        {
+            return await _context.Cameras
+                .AsNoTracking()
+                .ToListAsync(ct);
+        }
+
     }
 
     public class UnitOfWork : IUnitOfWork

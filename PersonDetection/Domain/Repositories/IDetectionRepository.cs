@@ -16,6 +16,8 @@ namespace PersonDetection.Domain.Repositories
 
     public interface ICameraRepository
     {
+        Task<Camera?> GetByIdAsync(int cameraId, CancellationToken ct = default);
+        Task<List<Camera>> GetAllAsync(CancellationToken ct = default);
         Task<CameraSession?> GetActiveSessionAsync(int cameraId, CancellationToken ct = default);
         Task<int> CreateSessionAsync(CameraSession session, CancellationToken ct = default);
         Task UpdateSessionAsync(CameraSession session, CancellationToken ct = default);

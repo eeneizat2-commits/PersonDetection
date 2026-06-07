@@ -816,7 +816,6 @@ namespace PersonDetection.Infrastructure.Services
                             BoundingBox_Y = person.BoundingBox.Y,
                             BoundingBox_Width = person.BoundingBox.Width,
                             BoundingBox_Height = person.BoundingBox.Height,
-                            FeatureVector = features != null ? string.Join(",", features) : null,
                             DetectedAt = job.StartedAt.AddSeconds(frameDetection.TimestampSeconds),
                             DetectionResultId = detectionResult.Id,
                             VideoJobId = videoJob.Id,

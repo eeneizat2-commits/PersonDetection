@@ -81,7 +81,6 @@ namespace PersonDetection.Infrastructure.Context
                 builder.HasIndex(x => x.GlobalPersonId);
                 builder.HasIndex(x => x.DetectedAt);
                 builder.HasIndex(x => x.VideoJobId);  // 👈 ADD INDEX
-                builder.Property(x => x.FeatureVector).HasMaxLength(8000);
                 builder.HasOne(x => x.VideoJob)       // 👈 ADD RELATIONSHIP
                     .WithMany(v => v.DetectedPersons)
                     .HasForeignKey(x => x.VideoJobId)

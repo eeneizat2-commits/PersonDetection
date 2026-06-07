@@ -12,7 +12,6 @@ namespace PersonDetection.Domain.Entities
         public int BoundingBox_Y { get; set; }
         public int BoundingBox_Width { get; set; }
         public int BoundingBox_Height { get; set; }
-        public string? FeatureVector { get; set; }
         public int? TrackId { get; set; }
         public DateTime DetectedAt { get; set; }
         public int DetectionResultId { get; set; }
@@ -83,29 +82,19 @@ namespace PersonDetection.Domain.Entities
                 VideoJobId = videoJobId,
                 FrameNumber = frameNumber,
                 TimestampSeconds = timestampSeconds,
-                FeatureVector = features != null ? string.Join(",", features) : null,
                 DetectedAt = DateTime.UtcNow
             };
         }
 
-        /// <summary>
-        /// Assign identity with FeatureVector object
-        /// </summary>
-        public void AssignIdentity(Guid globalPersonId, FeatureVector featureVector)
-        {
-            GlobalPersonId = globalPersonId;
-            FeatureVector = featureVector != null ? string.Join(",", featureVector.Values) : null;
-        }
 
         /// <summary>
-        /// Assign identity with float array
+        /// Assign identity - ONLY sets GlobalPersonId
+        /// Features are managed EXCLUSIVELY by PersonIdentityService → UniquePersonFeatures table
         /// </summary>
-        public void AssignIdentity(Guid globalPersonId, float[]? features)
+        public void AssignIdentity(Guid globalPersonId)
         {
             GlobalPersonId = globalPersonId;
-            FeatureVector = features != null ? string.Join(",", features) : null;
         }
-
         public void UpdateTrackId(int trackId)
         {
             TrackId = trackId;
@@ -124,20 +113,6 @@ namespace PersonDetection.Domain.Entities
                    aspectRatio >= minAspectRatio;
         }
 
-        /// <summary>
-        /// Get feature vector as float array
-        /// </summary>
-        public float[]? GetFeatureArray()
-        {
-            if (string.IsNullOrEmpty(FeatureVector)) return null;
-            try
-            {
-                return FeatureVector.Split(',').Select(float.Parse).ToArray();
-            }
-            catch
-            {
-                return null;
-            }
-        }
+       
     }
 }
